@@ -65,7 +65,7 @@ extern FILE* miss_ratio_f;
 #define DRAMOFFSET_DEFAULT (0)
 
 #define DRAMPATH_DEFAULT  "/dev/dax0.0"
-#define NVMPATH_DEFAULT   "/dev/dax1.0"
+#define NVMPATH_DEFAULT   "/dev/dax2.0"
 
 //#define PAGE_SIZE (1024 * 1024 * 1024)
 //#define PAGE_SIZE (2 * (1024 * 1024))

@@ -902,9 +902,9 @@ void pebs_stats()
 
   accesses_cnt[DRAMREAD] = accesses_cnt[NVMREAD] = 0;
 
-  fprintf(stdout, "Total: %.2f GB DRAM, %.2f GB NVM\n",
-    (double)(dram_hot_list.numentries + dram_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0), 
-    (double)(nvm_hot_list.numentries + nvm_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0));
-  fflush(stdout);
+//  fprintf(stdout, "Total: %.2f GB DRAM, %.2f GB NVM\n",
+//    (double)(dram_hot_list.numentries + dram_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0), 
+//    (double)(nvm_hot_list.numentries + nvm_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0));
+//  fflush(stdout);
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
 }
