@@ -58,14 +58,14 @@ extern uint64_t stats_thread_cpu;
 
 extern FILE* miss_ratio_f;
 
-#define NVMSIZE_DEFAULT   (480L * (1024L * 1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (128L * (1024L * 1024L * 1024L))
+#define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
+#define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L * 1024L))
 
 #define NVMOFFSET_DEFAULT (0)
 #define DRAMOFFSET_DEFAULT (0)
 
 #define DRAMPATH_DEFAULT  "/dev/dax0.0"
-#define NVMPATH_DEFAULT   "/dev/dax2.0"
+#define NVMPATH_DEFAULT   "/dev/dax1.0"
 
 //#define PAGE_SIZE (1024 * 1024 * 1024)
 //#define PAGE_SIZE (2 * (1024 * 1024))

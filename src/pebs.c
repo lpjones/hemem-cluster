@@ -128,6 +128,7 @@ void *pebs_scan_thread()
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
+  scanning_thread_cpu = 0;
   CPU_SET(scanning_thread_cpu, &cpuset);
   int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (s != 0) {
@@ -230,7 +231,7 @@ void *pebs_scan_thread()
           }
           break;
         default:
-          fprintf(stderr, "Unknown type %u\n", ph->type);
+          // fprintf(stderr, "Unknown type %u\n", ph->type);
           //assert(!"NYI");
           break;
         }
@@ -499,6 +500,7 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
 
+  migration_thread_cpu = 2;
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(migration_thread_cpu, &cpuset);
@@ -771,7 +773,7 @@ void pebs_init(void)
 
   LOG("pebs_init: started\n");
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-%d.txt", getpid());
+  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-hem.txt");
   miss_ratio_f = fopen(logpath, "w");
   if (miss_ratio_f == NULL) {
     perror("miss ratio file fopen");
@@ -785,13 +787,13 @@ void pebs_init(void)
     pebs_start_cpu = START_THREAD_DEFAULT;
   
   scanning_thread_cpu = hemem_start_cpu;
-  migration_thread_cpu = scanning_thread_cpu + 1;
+  migration_thread_cpu = scanning_thread_cpu + 1 * 2;
 
   for (int i = pebs_start_cpu; i < pebs_start_cpu + num_cores; i++) {
     //perf_page[i][READ] = perf_setup(0x1cd, 0x4, i);  // MEM_TRANS_RETIRED.LOAD_LATENCY_GT_4
     //perf_page[i][READ] = perf_setup(0x81d0, 0, i);   // MEM_INST_RETIRED.ALL_LOADS
-    perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
-    perf_page[i][NVMREAD] = perf_setup(0x80d1, 0, i, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
+    perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i * 2, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
+    perf_page[i][NVMREAD] = perf_setup(0x4d3, 0, i * 2, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
     //perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
     //perf_page[i][WRITE] = perf_setup(0x12d0, 0, i);   // MEM_INST_RETIRED.STLB_MISS_STORES
   }

@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -g -Wall -O3 -fPIC
 #CFLAGS = -g3 -Wall -O0 -fPIC
 LDFLAGS = -shared
-INCLUDES = -I../linux/usr/include/
+INCLUDES = -I../../hemem-mod/linux/usr/include/
 LIBS = -lm -lpthread
 HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept -L../Hoard/src -lhoard
 

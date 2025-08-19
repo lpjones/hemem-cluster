@@ -236,7 +236,7 @@ void hemem_init()
   else
     num_cores = PEBS_NPROCS;
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/debuglog-%d.txt", getpid());
+  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/debuglog-hem.txt");
   hememlogf = fopen(logpath, "w+");
   if (hememlogf == NULL) {
     perror("log file open\n");
@@ -296,7 +296,7 @@ void hemem_init()
   }
 
   char stats_name_buf[25]; 
-  int snret = snprintf(stats_name_buf, 25, "/tmp/stats-%d.txt", getpid());
+  int snret = snprintf(stats_name_buf, 25, "/tmp/stats-hem.txt");
   assert(snret > 0);
   statsf = fopen(stats_name_buf, "w+");
   if (statsf == NULL) {
