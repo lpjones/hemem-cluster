@@ -20,6 +20,20 @@
 #include "timer.h"
 #include "spsc-ring.h"
 
+#define RECORD_PEBS
+
+#ifdef RECORD_PEBS
+#include <x86intrin.h>
+
+struct pebs_record {
+    uint64_t tsc;
+    uint32_t cpu;
+    uint8_t  event;
+    uint64_t va;
+    uint64_t ip;
+} __attribute__((packed));
+#endif
+
 uint64_t pebs_start_cpu;
 uint64_t migration_thread_cpu;
 uint64_t scanning_thread_cpu;
@@ -136,6 +150,10 @@ void *pebs_scan_thread()
     assert(0);
   }
 
+#ifdef RECORD_PEBS
+  FILE* trace_fp = fopen("/tmp/trace.bin", "wb");
+#endif
+
   for(;;) {
     for (int i = pebs_start_cpu; i < pebs_start_cpu + num_cores; i++) {
       for(int j = 0; j < NPBUFTYPES; j++) {
@@ -162,6 +180,17 @@ void *pebs_scan_thread()
               page = get_hemem_page(pfn);
               if (page != NULL) {
                 if (page->va != 0) {
+#ifdef RECORD_PEBS
+                  uint64_t tsc = rdtscp();
+                  struct pebs_record rec = {
+                    .tsc=tsc,
+                    .cpu=i, 
+                    .event=j, 
+                    .va=ps->addr,
+                    .ip=ps->ip
+                  };
+                  fwrite(&rec, sizeof(rec), 1, trace_fp);
+#endif
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
