@@ -205,6 +205,7 @@ struct hemem_page* find_page(uint64_t va)
 
 void hemem_init()
 {
+  if (is_init) return;
   struct uffdio_api uffdio_api;
 #ifdef USE_DMA
   struct uffdio_dma_channs uffdio_dma_channs;
