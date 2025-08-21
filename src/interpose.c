@@ -23,7 +23,7 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
 {
   //ensure_init();
   if (!is_init) {
-    //LOG("hemem interpose: calling libc mmap due to hemem init in progress\n");
+    LOG("hemem interpose: calling libc mmap due to hemem init in progress\n");
     return 1;
   }
 
@@ -41,6 +41,7 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   
   if ((prot & PROT_EXEC) == PROT_EXEC) {
     // filter out code mappings
+    LOG("hemem interpose: calling libc mmap due to code mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
 
@@ -57,7 +58,7 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   //}
   
   if ((fd == dramfd) || (fd == nvmfd)) {
-    //LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
+    LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
     return 1;
   }
 

@@ -157,11 +157,16 @@ void *pebs_scan_thread()
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
             if(ps->addr != 0) {
-              __u64 pfn = ps->addr & HUGE_PFN_MASK;
+              __u64 pfn = ps->addr & PAGE_PFN_MASK;
+              assert(pfn % PAGE_SIZE == 0);
+              // printf("PEBS sample: 0x%llx\n", pfn);
+              // print all HeMem pages
+              
             
               page = get_hemem_page(pfn);
               if (page != NULL) {
                 if (page->va != 0) {
+                  // printf("hemem sample: 0x%lx\n", page->va);
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {

@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -g -Wall -O3 -fPIC
-#CFLAGS = -g3 -Wall -O0 -fPIC
+# CFLAGS = -g -Wall -O3 -fPIC
+CFLAGS = -g3 -Wall -O0 -fPIC
 LDFLAGS = -shared
 INCLUDES = -I../../hemem-mod/linux/usr/include/
 LIBS = -lm -lpthread

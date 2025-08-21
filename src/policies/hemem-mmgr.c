@@ -157,7 +157,7 @@ static void move_hot(void)
       nn = calloc(512, sizeof(struct mmgr_node));
       for (size_t i = 0; i < 512; i++) {
         // TODO: break up huge page
-        nn[i].offset = hn->offset + (i * BASEPAGE_SIZE);
+        nn[i].offset = hn->offset + (i * PAGE_SIZE);
         enqueue_fifo(&mem_free[FASTMEM][BASEP], &nn[i]);
       }
       free(hn);

@@ -178,6 +178,7 @@ static void *hemem_stats_thread()
 
 void add_page(struct hemem_page *page)
 {
+  // printf("Adding HeMem page: 0x%lx\n", page->va);
   struct hemem_page *p;
   pthread_mutex_lock(&pages_lock);
   HASH_FIND(hh, pages, &(page->va), sizeof(uint64_t), p);
@@ -188,6 +189,8 @@ void add_page(struct hemem_page *page)
 
 void remove_page(struct hemem_page *page)
 {
+  // printf("Removing HeMem page: 0x%lx\n", page->va);
+
   pthread_mutex_lock(&pages_lock);
   HASH_DEL(pages, page);
   pthread_mutex_unlock(&pages_lock);
@@ -431,6 +434,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
   assert(addr != 0);
   assert(length != 0);
+  // printf("addr: %p, length: %zu\n", addr, length);
 
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     page = pagefault();
@@ -440,6 +444,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
     offset = page->devdax_offset;
     in_dram = page->in_dram;
     pagesize = pt_to_pagesize(page->pt);
+    // printf("page size: %zu\n", pagesize);
 
     tmpaddr = (in_dram ? dram_devdax_mmap + (offset - dramoffset): nvm_devdax_mmap + (offset - nvmoffset));
 #ifndef USE_DMA
@@ -458,6 +463,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
       perror("newptr mmap");
       assert(0);
     }
+    // printf("New HeMem page: 0x%p\n", newptr);
   
     if (newptr != (void*)page_boundry) {
       fprintf(stderr, "hemem: mmap populate: warning, newptr != page boundry\n");
@@ -477,7 +483,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
     // use mmap return addr to track new page's virtual address
     page->va = (uint64_t)newptr;
     assert(page->va != 0);
-    assert(page->va % HUGEPAGE_SIZE == 0);
+    assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
     page->migrations_up = page->migrations_down = 0;
     //page->pa = hemem_va_to_pa(page);
@@ -494,7 +500,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
 }
 
-#define PAGE_ROUND_UP(x) (((x) + (HUGEPAGE_SIZE)-1) & (~((HUGEPAGE_SIZE)-1)))
+#define PAGE_ROUND_UP(x) (((x) + (PAGE_SIZE)-1) & (~((PAGE_SIZE)-1)))
 
 void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
@@ -594,7 +600,7 @@ int hemem_munmap(void* addr, size_t length)
       // TODO: deal with holes?
       //LOG("hemem_mmunmap: no page to umnap\n");
       //assert(0);
-      page_boundry += BASEPAGE_SIZE;
+      page_boundry += PAGE_SIZE;
     }
   }
 
@@ -723,7 +729,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   if (newptr != (void*)page->va) {
     fprintf(stderr, "mapped address is not same as faulting address\n");
   }
-  assert(page->va % HUGEPAGE_SIZE == 0);
+  assert(page->va % PAGE_SIZE == 0);
   gettimeofday(&end, NULL);
   LOG_TIME("mmap_dram: %f s\n", elapsed(&start, &end));
 
@@ -837,7 +843,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   if (newptr != (void*)page->va) {
     fprintf(stderr, "mapped address is not same as faulting address\n");
   }
-  assert(page->va % HUGEPAGE_SIZE == 0);
+  assert(page->va % PAGE_SIZE == 0);
   gettimeofday(&end, NULL);
   LOG_TIME("mmap_nvm: %f s\n", elapsed(&start, &end));
 
@@ -889,7 +895,7 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   //LOG("hemem_wp_page: wp addr %lx pte: %lx\n", addr, hemem_va_to_pa(addr));
 
   assert(addr != 0);
-  assert(addr % HUGEPAGE_SIZE == 0);
+  assert(addr % PAGE_SIZE == 0);
 
   gettimeofday(&start, NULL);
   wp.range.start = addr;
@@ -970,6 +976,7 @@ void handle_missing_fault(uint64_t page_boundry)
   offset = page->devdax_offset;
   in_dram = page->in_dram;
   pagesize = pt_to_pagesize(page->pt);
+  printf("Page Size: %lu\n", pagesize);
 
   tmp_offset = (in_dram) ? dram_devdax_mmap + (offset - dramoffset) : nvm_devdax_mmap + (offset - nvmoffset);
 
@@ -1023,7 +1030,7 @@ void handle_missing_fault(uint64_t page_boundry)
   // use mmap return addr to track new page's virtual address
   page->va = (uint64_t)newptr;
   assert(page->va != 0);
-  assert(page->va % HUGEPAGE_SIZE == 0);
+  assert(page->va % PAGE_SIZE == 0);
   page->migrating = false;
   page->migrations_up = page->migrations_down = 0;
   //page->pa = hemem_va_to_pa(page);
@@ -1190,7 +1197,7 @@ void hemem_clear_bits(struct hemem_page *page)
   struct uffdio_page_flags page_flags;
 
   page_flags.va = page->va;
-  assert(page_flags.va % HUGEPAGE_SIZE == 0);
+  assert(page_flags.va % PAGE_SIZE == 0);
   page_flags.flag1 = HEMEM_ACCESSED_FLAG;
   page_flags.flag2 = HEMEM_DIRTY_FLAG;
 
@@ -1213,7 +1220,7 @@ uint64_t hemem_get_bits(struct hemem_page *page)
   struct uffdio_page_flags page_flags;
 
   page_flags.va = page->va;
-  assert(page_flags.va % HUGEPAGE_SIZE == 0);
+  assert(page_flags.va % PAGE_SIZE == 0);
   page_flags.flag1 = HEMEM_ACCESSED_FLAG;
   page_flags.flag2 = HEMEM_DIRTY_FLAG;
 
