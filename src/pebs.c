@@ -776,6 +776,8 @@ void pebs_init(void)
   uint64_t** buffer;
   char logpath[32];
 
+  internal_call = true;
+
   LOG("pebs_init: started\n");
 
   snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-hem.txt");
@@ -803,56 +805,129 @@ void pebs_init(void)
     //perf_page[i][WRITE] = perf_setup(0x12d0, 0, i);   // MEM_INST_RETIRED.STLB_MISS_STORES
   }
 
-  pthread_mutex_init(&(dram_free_list.list_lock), NULL);
-  for (int i = 0; i < dramsize / PAGE_SIZE; i++) {
-    struct hemem_page *p = calloc(1, sizeof(struct hemem_page));
-    p->devdax_offset = i * PAGE_SIZE + dramoffset;
-    p->present = false;
-    p->in_dram = true;
-    p->ring_present = false;
-    p->pt = pagesize_to_pt(PAGE_SIZE);
-    pthread_mutex_init(&(p->page_lock), NULL);
+  size_t dram_pages = dramsize / PAGE_SIZE;
+  size_t nvm_pages  = nvmsize  / PAGE_SIZE;
 
+  // Allocate metadata arrays in one anon mapping each (zero-filled)
+  LOG("DRAM pages: %ld\n", dramsize / PAGE_SIZE);
+  LOG("DRAM page meta data size: %lu\n", (unsigned long)(sizeof(struct hemem_page) * dram_pages));
+  struct hemem_page *dram_meta = libc_mmap(NULL, dram_pages * sizeof(struct hemem_page),
+                            PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(dram_meta && dram_meta != MAP_FAILED);
+
+  LOG("NVM pages: %ld\n", nvmsize / PAGE_SIZE);
+  LOG("NVM page meta data size: %lu\n", (unsigned long)(sizeof(struct hemem_page) * nvm_pages));
+  struct hemem_page *nvm_meta = libc_mmap(NULL, nvm_pages * sizeof(struct hemem_page),
+                          PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(nvm_meta && nvm_meta != MAP_FAILED);
+
+  pthread_mutex_init(&(dram_free_list.list_lock), NULL);
+  
+  for (size_t i = 0; i < dram_pages; i++) {
+    struct hemem_page *p = &dram_meta[i];                // <— no malloc/calloc
+    // (mmap anon is zeroed; no memset needed)
+    p->devdax_offset = i * PAGE_SIZE + dramoffset;
+    p->present       = false;
+    p->in_dram       = true;
+    p->ring_present  = false;
+    p->pt            = pagesize_to_pt(PAGE_SIZE);
+    pthread_mutex_init(&(p->page_lock), NULL);
     enqueue_fifo(&dram_free_list, p);
   }
 
   pthread_mutex_init(&(nvm_free_list.list_lock), NULL);
-  for (int i = 0; i < nvmsize / PAGE_SIZE; i++) {
-    struct hemem_page *p = calloc(1, sizeof(struct hemem_page));
+  
+  for (size_t i = 0; i < nvm_pages; i++) {
+    struct hemem_page *p = &nvm_meta[i];                 // <— no malloc/memset(1)
     p->devdax_offset = i * PAGE_SIZE + nvmoffset;
-    p->present = false;
-    p->in_dram = false;
-    p->ring_present = false;
-    p->pt = pagesize_to_pt(PAGE_SIZE);
+    p->present       = false;
+    p->in_dram       = false;
+    p->ring_present  = false;
+    p->pt            = pagesize_to_pt(PAGE_SIZE);
     pthread_mutex_init(&(p->page_lock), NULL);
-
     enqueue_fifo(&nvm_free_list, p);
   }
 
-  pthread_mutex_init(&(dram_hot_list.list_lock), NULL);
-  pthread_mutex_init(&(dram_cold_list.list_lock), NULL);
-  pthread_mutex_init(&(nvm_hot_list.list_lock), NULL);
-  pthread_mutex_init(&(nvm_cold_list.list_lock), NULL);
-
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
+  // Ring buffers: already using libc_mmap (good)
+  LOG("Creating ring buffers: 3 x (%lu)\n", sizeof(uint64_t*) * CAPACITY);
+  buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY,
+                     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(buffer && buffer != MAP_FAILED);
   hot_ring = ring_buf_init(buffer, CAPACITY);
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
+
+  buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY,
+                     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(buffer && buffer != MAP_FAILED);
   cold_ring = ring_buf_init(buffer, CAPACITY);
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
+
+  buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY,
+                     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(buffer && buffer != MAP_FAILED);
   free_page_ring = ring_buf_init(buffer, CAPACITY);
 
   int r = pthread_create(&scan_thread, NULL, pebs_scan_thread, NULL);
   assert(r == 0);
-  
   r = pthread_create(&kswapd_thread, NULL, pebs_policy_thread, NULL);
   assert(r == 0);
+
+  // pthread_mutex_init(&(dram_free_list.list_lock), NULL);
+  // LOG("DRAM pages: %ld\n", dramsize / PAGE_SIZE);
+  // LOG("DRAM page meta data size: %lu\n", sizeof(struct hemem_page) * (dramsize / PAGE_SIZE));
+  // for (int i = 0; i < dramsize / PAGE_SIZE; i++) {
+  //   struct hemem_page *p = libc_mmap(NULL, sizeof(struct hemem_page), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  //   memset(p, 0, sizeof(struct hemem_page));
+  //   p->devdax_offset = i * PAGE_SIZE + dramoffset;
+  //   p->present = false;
+  //   p->in_dram = true;
+  //   p->ring_present = false;
+  //   p->pt = pagesize_to_pt(PAGE_SIZE);
+  //   pthread_mutex_init(&(p->page_lock), NULL);
+
+  //   enqueue_fifo(&dram_free_list, p);
+  // }
+
+  // pthread_mutex_init(&(nvm_free_list.list_lock), NULL);
+  // LOG("NVM pages: %ld\n", nvmsize / PAGE_SIZE);
+  // LOG("NVM page meta data size: %lu\n", sizeof(struct hemem_page) * (nvmsize / PAGE_SIZE));
+  // for (int i = 0; i < nvmsize / PAGE_SIZE; i++) {
+  //   struct hemem_page *p = libc_mmap(NULL, sizeof(struct hemem_page), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  //   memset(p, 0, sizeof(struct hemem_page));
+  //   p->devdax_offset = i * PAGE_SIZE + nvmoffset;
+  //   p->present = false;
+  //   p->in_dram = false;
+  //   p->ring_present = false;
+  //   p->pt = pagesize_to_pt(PAGE_SIZE);
+  //   pthread_mutex_init(&(p->page_lock), NULL);
+
+  //   enqueue_fifo(&nvm_free_list, p);
+  // }
+
+  // pthread_mutex_init(&(dram_hot_list.list_lock), NULL);
+  // pthread_mutex_init(&(dram_cold_list.list_lock), NULL);
+  // pthread_mutex_init(&(nvm_hot_list.list_lock), NULL);
+  // pthread_mutex_init(&(nvm_cold_list.list_lock), NULL);
+
+  // LOG("Creating ring buffers: 3 x (%lu)\n", sizeof(uint64_t*) * CAPACITY);
+  // buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  // assert(buffer && buffer != MAP_FAILED); 
+  // hot_ring = ring_buf_init(buffer, CAPACITY);
+  // buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  // assert(buffer && buffer != MAP_FAILED); 
+  // cold_ring = ring_buf_init(buffer, CAPACITY);
+  // buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  // assert(buffer && buffer != MAP_FAILED); 
+  // free_page_ring = ring_buf_init(buffer, CAPACITY);
+
+  // int r = pthread_create(&scan_thread, NULL, pebs_scan_thread, NULL);
+  // assert(r == 0);
+  
+  // r = pthread_create(&kswapd_thread, NULL, pebs_policy_thread, NULL);
+  // assert(r == 0);
   
   LOG("Memory management policy is PEBS\n");
 
   LOG("pebs_init: finished\n");
+  internal_call = false;
 
 }
 

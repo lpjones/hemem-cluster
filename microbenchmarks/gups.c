@@ -41,7 +41,7 @@
 
 #include "gups.h"
 
-#define MAX_THREADS     24
+#define MAX_THREADS     16
 
 #define GUPS_PAGE_SIZE      (4 * 1024)
 #define PAGE_NUM            3
@@ -64,7 +64,7 @@ extern double hotset_fraction;
 #define IGNORE_STRAGGLERS
 
 int threads;
-int start_cpu = 10;
+int start_cpu = 0;
 
 uint64_t hot_start = 0;
 volatile uint64_t hotsize = 0;
@@ -226,13 +226,15 @@ static void *do_gups(void *arguments)
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
-  CPU_SET(start_cpu + args->tid, &cpuset);
+  int cpu_core = start_cpu + args->tid * 2;
+  fprintf(stderr, "trying to pin thread %d to core %d\n", args->tid, cpu_core);
+  CPU_SET(cpu_core, &cpuset);
   int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (s != 0) {
     perror("pthread_setaffinity_np");
     assert(0);
   }
-  fprintf(stderr, "pinned thread %d to core %d\n", args->tid, start_cpu + args->tid);
+  fprintf(stderr, "pinned thread %d to core %d\n", args->tid, cpu_core);
 
   srand(args->tid);
   lfsr = rand();
@@ -350,7 +352,8 @@ int main(int argc, char **argv)
   fprintf(stderr, "%ld byte element size (%ld elements total)\n", elt_size, size / elt_size);
   fflush(stderr);
 
-  p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE, -1, 0);
+  // p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE, -1, 0);
+  p = malloc(size);
   if (p == MAP_FAILED) {
     perror("mmap");
     assert(0);

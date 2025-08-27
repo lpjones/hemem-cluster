@@ -21,6 +21,8 @@
 #include <stdbool.h>
 #include <sched.h>
 
+#include <malloc.h>
+
 #include "hemem.h"
 #include "timer.h"
 #include "uthash.h"
@@ -178,6 +180,8 @@ static void *hemem_stats_thread()
 
 void add_page(struct hemem_page *page)
 {
+  old_internal_call = internal_call;
+  internal_call = true;
   // printf("Adding HeMem page: 0x%lx\n", page->va);
   struct hemem_page *p;
   pthread_mutex_lock(&pages_lock);
@@ -185,6 +189,7 @@ void add_page(struct hemem_page *page)
   assert(p == NULL);
   HASH_ADD(hh, pages, va, sizeof(uint64_t), page);
   pthread_mutex_unlock(&pages_lock);
+  internal_call = old_internal_call;
 }
 
 void remove_page(struct hemem_page *page)
@@ -319,7 +324,7 @@ void hemem_init()
     dramsize = strtoull(dramsize_string, NULL, 10);
   else
     dramsize = DRAMSIZE_DEFAULT;
-
+  LOG("mapping DRAM\n");
   if(dramsize != 0) {
     dram_devdax_mmap =libc_mmap(NULL, dramsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, dramfd, dramoffset);
     if (dram_devdax_mmap == MAP_FAILED) {
@@ -327,6 +332,7 @@ void hemem_init()
       assert(0);
     }
   }
+  LOG("Finished mapping DRAM\n");
 
   char* nvmoffset_string = getenv("NVMOFFSET");
   if(nvmoffset_string != NULL)
@@ -339,12 +345,13 @@ void hemem_init()
     nvmsize = strtoull(nvmsize_string, NULL, 10);
   else
     nvmsize = NVMSIZE_DEFAULT;
-
+  LOG("mapping NVM\n");
   nvm_devdax_mmap =libc_mmap(NULL, nvmsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, nvmfd, nvmoffset);
   if (nvm_devdax_mmap == MAP_FAILED) {
     perror("nvm devdax mmap");
     assert(0);
   }
+  LOG("Finished mapping NVM\n");
 
 #ifndef USE_DMA 
   uint64_t i;
@@ -364,13 +371,18 @@ void hemem_init()
   s = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
   assert(s == 0);
 #endif
-
+  LOG("Doing paging_init()\n");
   paging_init();
+  LOG("Finished paging_init()\n");
 
-  is_init = true;
+  
+  LOG("hemem: initialization complete\n");
 
   struct hemem_page *dummy_page = calloc(1, sizeof(struct hemem_page));
   add_page(dummy_page);
+
+  __sync_synchronize();
+  is_init = true;
 
 #ifdef USE_DMA
   uffdio_dma_channs.num_channs = NUM_CHANNS;

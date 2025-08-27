@@ -11,6 +11,8 @@
 #include <assert.h>
 #include <malloc.h>
 
+#include<unistd.h>
+
 #include "hemem.h"
 #include "interpose.h"
 
@@ -21,9 +23,12 @@ void (*libc_free)(void* ptr) = NULL;
 
 static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, off_t offset, uint64_t *result)
 {
+  // if (length == 2147487744) {
+  //   LOG("hemem interpose: hooked main malloc: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+  // }
   //ensure_init();
   if (!is_init) {
-    LOG("hemem interpose: calling libc mmap due to hemem init in progress\n");
+    LOG("hemem interpose: calling libc mmap due to hemem init in progress: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
 
@@ -58,12 +63,12 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   //}
   
   if ((fd == dramfd) || (fd == nvmfd)) {
-    LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
+    LOG("hemem interpose: calling libc mmap due to hemem devdax mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
 
 #ifndef LLAMA
-  if (length < 1UL * 1024UL * 1024UL * 1024UL) {
+  if (length < 4UL * 1024UL) {
     LOG("hemem interpose calling libc mmap due to small allocation size: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
@@ -76,6 +81,7 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   }
   return 0;
 }
+
 
 
 static int munmap_filter(void *addr, size_t length, uint64_t* result)
@@ -127,10 +133,18 @@ static __attribute__((constructor)) void init(void)
 
 #ifdef LLAMA
   int ret = mallopt(M_MMAP_THRESHOLD, 0);
+  
   if (ret != 1) {
     perror("mallopt");
   }
   assert(ret == 1);
+
+  ret = mallopt(M_MMAP_MAX, 4194304);
+  if (ret != 1) {
+    perror("mallopt");
+  }
+  assert(ret == 1);
+  
 #endif
   hemem_init();
 }
