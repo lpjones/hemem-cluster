@@ -471,9 +471,10 @@ static void hemem_mmap_populate(void* addr, size_t length)
   
     // now that we have an offset determined via the policy algorithm, actually map
     // the page for the application
+    // fprintf(stderr, "hemem: mmap populate: mapping page 0x%lx, size %zu\n", page_boundry, pagesize);
     newptr = libc_mmap((void*)page_boundry, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, (in_dram ? dramfd : nvmfd), offset);
     if (newptr == MAP_FAILED) {
-      perror("newptr mmap");
+      perror("hemem_mmap_populate: newptr mmap");
       assert(0);
     }
     // printf("New HeMem page: 0x%p\n", newptr);
@@ -736,7 +737,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   assert(libc_mmap != NULL);
   newptr = libc_mmap((void*)page->va, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, dramfd, new_addr_offset);
   if (newptr == MAP_FAILED) {
-    perror("newptr mmap");
+    perror("hemem_migrate_up: newptr mmap");
     assert(0);
   }
   if (newptr != (void*)page->va) {
@@ -850,7 +851,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   gettimeofday(&start, NULL);
   newptr = libc_mmap((void*)page->va, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, nvmfd, new_addr_offset);
   if (newptr == MAP_FAILED) {
-    perror("newptr mmap");
+    perror("hemem_migrate_down: newptr mmap");
     assert(0);
   }
   if (newptr != (void*)page->va) {
@@ -1014,7 +1015,7 @@ void handle_missing_fault(uint64_t page_boundry)
   gettimeofday(&start, NULL);
   newptr = libc_mmap((void*)page_boundry, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, (in_dram ? dramfd : nvmfd), offset);
   if (newptr == MAP_FAILED) {
-    perror("newptr mmap");
+    perror("handle_missing_fault: newptr mmap");
     /* free(page); */
     assert(0);
   }
