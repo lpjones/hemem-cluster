@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <unistd.h>
 
 #ifndef __cplusplus
 #include <stdatomic.h>
@@ -69,20 +70,21 @@ extern FILE* miss_ratio_f;
 
 //#define PAGE_SIZE (1024 * 1024 * 1024)
 //#define PAGE_SIZE (2 * (1024 * 1024))
-#define BASEPAGE_SIZE	  (4UL * 1024UL)
-#define HUGEPAGE_SIZE 	(2UL * 1024UL * 1024UL)
+// #define BASEPAGE_SIZE	  (4UL * 1024UL)
+// #define HUGEPAGE_SIZE 	(2UL * 1024UL * 1024UL)
 // #define GIGAPAGE_SIZE   (1024UL * 1024UL * 1024UL)
-#define PAGE_SIZE 	    BASEPAGE_SIZE
-
-#define BASEPAGE_MASK	(BASEPAGE_SIZE - 1)
-#define HUGEPAGE_MASK	(HUGEPAGE_SIZE - 1)
+#ifndef PAGE_SIZE
+  #define PAGE_SIZE 	    (2UL * 1024UL * 1024UL)
+#endif
+// #define BASEPAGE_MASK	(BASEPAGE_SIZE - 1)
+// #define HUGEPAGE_MASK	(HUGEPAGE_SIZE - 1)
 // #define GIGAPAGE_MASK   (GIGAPAGE_SIZE - 1)
-#define PAGE_MASK BASEPAGE_MASK
+#define PAGE_MASK (PAGE_SIZE - 1)
 
-#define BASE_PFN_MASK	(BASEPAGE_MASK ^ UINT64_MAX)
-#define HUGE_PFN_MASK	(HUGEPAGE_MASK ^ UINT64_MAX)
+// #define BASE_PFN_MASK	(BASEPAGE_MASK ^ UINT64_MAX)
+// #define HUGE_PFN_MASK	(HUGEPAGE_MASK ^ UINT64_MAX)
 // #define GIGA_PFN_MASK   (GIGAPAGE_MASK ^ UINT64_MAX)
-#define PAGE_PFN_MASK BASE_PFN_MASK
+#define PAGE_PFN_MASK (PAGE_MASK ^ UINT64_MAX)
 
 #define START_THREAD_DEFAULT 0
 #define FAULT_THREAD_CPU_DEFAULT  (START_THREAD_DEFAULT)
@@ -99,20 +101,47 @@ extern FILE *hememlogf;
 extern FILE *timef;
 extern bool timing;
 
-static inline void log_time(const char* fmt, ...)
+struct __attribute__((__packed__)) mig_record {
+  double val;
+  uint8_t type;
+};
+
+enum mig_types {
+  MEMCPY_TO_DRAM = 0,
+  MMAP_DRAM1 = 1,
+  UFFDIO_REGISTER1 = 2,
+  HEMEM_MIGRATE_UP = 3,
+  MEMCPY_TO_NVM = 4,
+  MMAP_NVM1 = 5,
+  HEMEM_MIGRATE_DOWN = 6,
+  UFFDIO_WRITEPROTECT1 = 7,
+  PAGE_FAULT = 8,
+  MMAP_DRAM = 9,
+  MMAP_NVM = 10,
+  HEMEM_MISSING_FAULT = 11,
+  UFFDIO_REGISTER2 = 12,
+  UFFDIO_REGISTER3 = 13,
+  MIGRATE_DOWN = 14,
+  MIGRATE_UP = 15,
+  MIGRATE = 16,
+  MEM_POLICY_ALLOCATE_PAGE1 = 17,
+  MEM_POLICY_ALLOCATE_PAGE2 = 18,
+  MIG_QUEUE_DELAY_UP = 19,
+  MIG_QUEUE_DELAY_DOWN = 20,
+  NMIGTYPES
+};
+
+static inline void log_time(uint8_t type, double val)
 {
-  if (timing) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(timef, fmt, args);
-    va_end(args);
-  }
+  struct mig_record rec = { .val = val, .type = type };
+  write(fileno(timef), &rec, sizeof(struct mig_record));
 }
 
 
 //#define LOG_TIME(str, ...) log_time(str, __VA_ARGS__)
 //#define LOG_TIME(str, ...) fprintf(timef, str, __VA_ARGS__)
-#define LOG_TIME(str, ...) while(0) {}
+// #define LOG_TIME(str, ...) while(0) {}
+#define LOG_TIME(type, val) log_time(type, val)
 
 extern FILE *statsf;
 //#define LOG_STATS(str, ...) fprintf(stderr, str, __VA_ARGS__)
@@ -168,41 +197,56 @@ enum pagetypes {
 };
 
 struct hemem_page {
+  uint64_t accesses[NPBUFTYPES];
+  uint64_t tot_accesses[NPBUFTYPES];
   uint64_t va;
   uint64_t devdax_offset;
-  bool in_dram;
-  enum pagetypes pt;
-  volatile bool migrating;
-  bool present;
-  bool written;
-  bool hot;
   uint64_t naccesses;
   uint64_t migrations_up, migrations_down;
   uint64_t local_clock;
-  bool ring_present;
-  uint64_t accesses[NPBUFTYPES];
-  uint64_t tot_accesses[NPBUFTYPES];
-  pthread_mutex_t page_lock;
 
+  pthread_mutex_t page_lock;
+  enum pagetypes pt;
   UT_hash_handle hh;
   struct hemem_page *next, *prev;
   struct fifo_list *list;
+  struct timeval mig_start;
+
+  volatile bool migrating;
+  bool ring_present;
+  bool in_dram;
+  bool present;
+  bool written;
+  bool hot;
 };
+
+// static inline uint64_t pt_to_pagesize(enum pagetypes pt)
+// {
+//   switch(pt) {
+//   case HUGEP: return HUGEPAGE_SIZE;
+//   case BASEP: return BASEPAGE_SIZE;
+//   default: assert(!"Unknown page type");
+//   }
+// }
 
 static inline uint64_t pt_to_pagesize(enum pagetypes pt)
 {
-  switch(pt) {
-  case HUGEP: return HUGEPAGE_SIZE;
-  case BASEP: return BASEPAGE_SIZE;
-  default: assert(!"Unknown page type");
-  }
+  return PAGE_SIZE;
 }
+
+// static inline enum pagetypes pagesize_to_pt(uint64_t pagesize)
+// {
+//   switch (pagesize) {
+//     case BASEPAGE_SIZE: return BASEP;
+//     case HUGEPAGE_SIZE: return HUGEP;
+//     default: assert(!"Unknown page ssize");
+//   }
+// }
 
 static inline enum pagetypes pagesize_to_pt(uint64_t pagesize)
 {
   switch (pagesize) {
-    case BASEPAGE_SIZE: return BASEP;
-    case HUGEPAGE_SIZE: return HUGEP;
+    case PAGE_SIZE: return BASEP;
     default: assert(!"Unknown page ssize");
   }
 }

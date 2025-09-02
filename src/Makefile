@@ -6,6 +6,10 @@ INCLUDES = -I../../hemem-mod/linux/usr/include/
 LIBS = -lm -lpthread
 HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept -L../Hoard/src -lhoard
 
+ifdef PAGE_SIZE
+CFLAGS += -DPAGE_SIZE=$(PAGE_SIZE)
+endif
+
 default: libhemem.so libhemem-llama.so
 
 all: hemem-libs

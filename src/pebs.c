@@ -107,14 +107,16 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
 
 void make_hot_request(struct hemem_page* page)
 {
-   page->ring_present = true;
-   ring_buf_put(hot_ring, (uint64_t*)page); 
+  gettimeofday(&page->mig_start, NULL);
+  page->ring_present = true;
+  ring_buf_put(hot_ring, (uint64_t*)page); 
 }
 
 void make_cold_request(struct hemem_page* page)
 {
-    page->ring_present = true;
-    ring_buf_put(cold_ring, (uint64_t*)page);
+  gettimeofday(&page->mig_start, NULL);
+  page->ring_present = true;
+  ring_buf_put(cold_ring, (uint64_t*)page);
 }
 
 void *pebs_scan_thread()
@@ -261,7 +263,8 @@ static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
   page->migrating = false; 
 
   gettimeofday(&end, NULL);
-  LOG_TIME("migrate_down: %f s\n", elapsed(&start, &end));
+  LOG_TIME(MIGRATE_DOWN, elapsed(&start, &end));
+  LOG_TIME(MIG_QUEUE_DELAY_DOWN, elapsed(&page->mig_start, &end));
 }
 
 static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
@@ -276,7 +279,8 @@ static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
   page->migrating = false;
 
   gettimeofday(&end, NULL);
-  LOG_TIME("migrate_up: %f s\n", elapsed(&start, &end));
+  LOG_TIME(MIGRATE_UP, elapsed(&start, &end));
+  LOG_TIME(MIG_QUEUE_DELAY_UP, elapsed(&page->mig_start, &end));
 }
 
 // moves page to hot list -- called by migrate thread
@@ -694,7 +698,7 @@ out:
       usleep((uint64_t)((1.0 * PEBS_KSWAPD_INTERVAL) - migrate_time));
     }
  
-    LOG_TIME("migrate: %f s\n", elapsed(&start, &end));
+    LOG_TIME(MIGRATE, elapsed(&start, &end));
   }
 
   return NULL;
@@ -715,7 +719,7 @@ static struct hemem_page* pebs_allocate_page()
     enqueue_fifo(&dram_cold_list, page);
 
     gettimeofday(&end, NULL);
-    LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
+    LOG_TIME(MEM_POLICY_ALLOCATE_PAGE1, elapsed(&start, &end));
 
     return page;
   }
@@ -731,7 +735,7 @@ static struct hemem_page* pebs_allocate_page()
 
 
     gettimeofday(&end, NULL);
-    LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
+    LOG_TIME(MEM_POLICY_ALLOCATE_PAGE2, elapsed(&start, &end));
 
     return page;
   }
@@ -809,6 +813,7 @@ void pebs_init(void)
   size_t nvm_pages  = nvmsize  / PAGE_SIZE;
 
   // Allocate metadata arrays in one anon mapping each (zero-filled)
+  LOG("PAGE_SIZE: %lu\n", PAGE_SIZE);
   LOG("DRAM pages: %ld\n", dramsize / PAGE_SIZE);
   LOG("DRAM page meta data size: %lu\n", (unsigned long)(sizeof(struct hemem_page) * dram_pages));
   struct hemem_page *dram_meta = libc_mmap(NULL, dram_pages * sizeof(struct hemem_page),
