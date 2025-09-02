@@ -256,6 +256,8 @@ static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
   struct timeval start, end;
 
   gettimeofday(&start, NULL);
+  if (page->mig_start.tv_sec != 0)
+    LOG_TIME(MIG_QUEUE_DELAY_DOWN, elapsed(&page->mig_start, &start));
 
   page->migrating = true;
   hemem_wp_page(page, true);
@@ -264,7 +266,7 @@ static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
 
   gettimeofday(&end, NULL);
   LOG_TIME(MIGRATE_DOWN, elapsed(&start, &end));
-  LOG_TIME(MIG_QUEUE_DELAY_DOWN, elapsed(&page->mig_start, &end));
+
 }
 
 static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
@@ -272,6 +274,8 @@ static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
   struct timeval start, end;
 
   gettimeofday(&start, NULL);
+  if (page->mig_start.tv_sec != 0)
+    LOG_TIME(MIG_QUEUE_DELAY_UP, elapsed(&page->mig_start, &start));
 
   page->migrating = true;
   hemem_wp_page(page, true);
@@ -280,7 +284,7 @@ static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
 
   gettimeofday(&end, NULL);
   LOG_TIME(MIGRATE_UP, elapsed(&start, &end));
-  LOG_TIME(MIG_QUEUE_DELAY_UP, elapsed(&page->mig_start, &end));
+
 }
 
 // moves page to hot list -- called by migrate thread

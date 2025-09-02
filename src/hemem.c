@@ -182,10 +182,15 @@ void add_page(struct hemem_page *page)
 {
   old_internal_call = internal_call;
   internal_call = true;
-  // printf("Adding HeMem page: 0x%lx\n", page->va);
   struct hemem_page *p;
   pthread_mutex_lock(&pages_lock);
   HASH_FIND(hh, pages, &(page->va), sizeof(uint64_t), p);
+  if (p != NULL) {
+    LOG("HeMem page already exists: 0x%lx\n", page->va);
+    pthread_mutex_unlock(&pages_lock);
+    internal_call = old_internal_call;
+    return;
+  }
   assert(p == NULL);
   HASH_ADD(hh, pages, va, sizeof(uint64_t), page);
   pthread_mutex_unlock(&pages_lock);
@@ -500,6 +505,8 @@ static void hemem_mmap_populate(void* addr, size_t length)
     assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
     page->migrations_up = page->migrations_down = 0;
+    struct timeval null_mig = {0};
+    page->mig_start = null_mig;
     //page->pa = hemem_va_to_pa(page);
  
     pthread_mutex_init(&(page->page_lock), NULL);
@@ -1051,6 +1058,8 @@ void handle_missing_fault(uint64_t page_boundry)
   assert(page->va % PAGE_SIZE == 0);
   page->migrating = false;
   page->migrations_up = page->migrations_down = 0;
+  struct timeval null_mig = {0};
+  page->mig_start = null_mig;
   //page->pa = hemem_va_to_pa(page);
  
   mem_allocated += pagesize;
