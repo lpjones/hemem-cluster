@@ -579,7 +579,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
 
    
 //  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
-    hemem_mmap_populate(p, length);
+    // hemem_mmap_populate(p, length);
 //  }
 
   mem_mmaped = length;

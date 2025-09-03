@@ -60,6 +60,7 @@ extern uint64_t stats_thread_cpu;
 extern FILE* miss_ratio_f;
 
 #define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
+// #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L))
 #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L * 1024L))
 
 #define NVMOFFSET_DEFAULT (0)
@@ -76,6 +77,7 @@ extern FILE* miss_ratio_f;
 #ifndef PAGE_SIZE
   #define PAGE_SIZE 	    (2UL * 1024UL * 1024UL)
 #endif
+#define LOG_PAGE_SIZE     (63 - __builtin_clzll(PAGE_SIZE))
 // #define BASEPAGE_MASK	(BASEPAGE_SIZE - 1)
 // #define HUGEPAGE_MASK	(HUGEPAGE_SIZE - 1)
 // #define GIGAPAGE_MASK   (GIGAPAGE_SIZE - 1)

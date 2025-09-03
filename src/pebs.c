@@ -14,11 +14,101 @@
 #include <sys/mman.h>
 #include <sched.h>
 #include <sys/ioctl.h>
+#include <math.h>
 
 #include "hemem.h"
 #include "pebs.h"
 #include "timer.h"
 #include "spsc-ring.h"
+
+struct pebs_record {
+    uint64_t tsc;
+    uint64_t va;
+    uint64_t ip;
+    uint32_t cpu;
+    uint8_t  event;
+
+} __attribute__((packed));
+
+struct running_stats {
+    uint64_t count;
+    double mean;
+    double M2;
+};
+
+struct mean_var {
+  double mean;
+  double var;
+};
+
+struct pebs_rec_stats {
+  struct running_stats tsc_stats;
+  struct running_stats va_stats;
+  struct running_stats ip_stats;
+};
+
+struct pebs_rec_stats running_stats = {0};
+
+void update_stats(struct running_stats *stats, double new_value)
+{
+  stats->count++;
+  double delta = new_value - stats->mean;
+  stats->mean += delta / stats->count;
+  double delta2 = new_value - stats->mean;
+  stats->M2 += delta * delta2;
+}
+
+struct mean_var get_stats(struct running_stats *stats)
+{
+  if (stats->count < 2) {
+    return (struct mean_var){-1, -1};  // Not enough data
+  }
+  double mean = stats->mean;
+  double sample_variance = stats->M2 / (stats->count - 1);
+  return (struct mean_var){mean, sample_variance};
+}
+
+#define MAX_PAGES ((DRAMSIZE_DEFAULT + NVMSIZE_DEFAULT + PAGE_SIZE - 1) / (PAGE_SIZE))
+struct pebs_record page_records[MAX_PAGES];
+
+uint64_t rec_hash(uint64_t va)
+{
+  return (va >> LOG_PAGE_SIZE) % (MAX_PAGES);
+}
+
+void add_or_update_record(uint64_t tsc, uint64_t va, uint64_t ip, uint32_t cpu, uint8_t event)
+{
+  uint64_t hash = rec_hash(va);
+  uint64_t old_hash = hash;
+  while (page_records[hash].va != va && page_records[hash].va != 0) {
+    // linear probe for collisions
+    hash = (hash + 1) % MAX_PAGES;
+    assert(old_hash != hash);
+  }
+  update_stats(&running_stats.tsc_stats, tsc);
+  update_stats(&running_stats.va_stats, va);
+  update_stats(&running_stats.ip_stats, ip);
+  // printf("Add/Update: %lu, 0x%lx, 0x%lx, %d, %d\n", tsc, va, ip, cpu, event);
+  page_records[hash].tsc = tsc;
+  page_records[hash].va = va;
+  page_records[hash].ip = ip;
+  page_records[hash].cpu = cpu;
+  page_records[hash].event = event;
+}
+
+struct pebs_record *find_record(uint64_t va)
+{
+  uint64_t hash = rec_hash(va);
+  while (page_records[hash].va != 0) {
+    if (page_records[hash].va == va) {
+      return &page_records[hash];
+    }
+    hash = (hash + 1) % MAX_PAGES;
+  }
+  return NULL;
+}
+
+
 
 uint64_t pebs_start_cpu;
 uint64_t migration_thread_cpu;
@@ -119,6 +209,75 @@ void make_cold_request(struct hemem_page* page)
   ring_buf_put(cold_ring, (uint64_t*)page);
 }
 
+void cluster_stride(struct hemem_page *page)
+{
+  // hot
+  uint64_t predicted_va = page->va + 10 * PAGE_SIZE;
+  __u64 predicted_pfn = predicted_va & PAGE_PFN_MASK;
+  struct hemem_page *predicted_page = get_hemem_page(predicted_pfn);
+  if (predicted_page != NULL && predicted_page->va != 0) {
+    if (!predicted_page->hot && !predicted_page->ring_present) {
+      make_hot_request(predicted_page);
+    }
+  }
+
+  // cold
+  predicted_va = page->va - PAGE_SIZE;
+  predicted_pfn = predicted_va & PAGE_PFN_MASK;
+  predicted_page = get_hemem_page(predicted_pfn);
+  if (predicted_page != NULL && predicted_page->va != 0) {
+    if (predicted_page->hot && !predicted_page->ring_present) {
+      make_cold_request(predicted_page);
+    }
+  }
+}
+
+double cluster_distance(struct pebs_record *a, struct pebs_record *b)
+{
+  struct mean_var tsc_stats = get_stats(&running_stats.tsc_stats);
+  struct mean_var va_stats = get_stats(&running_stats.va_stats);
+  struct mean_var ip_stats = get_stats(&running_stats.ip_stats);
+
+  // Compute the distance between two records
+  double va_dist = (((double)a->va - (double)b->va) - va_stats.mean) / va_stats.var;
+  double ip_dist = (((double)a->ip - (double)b->ip) - ip_stats.mean) / ip_stats.var;
+  double tsc_dist = (((double)a->tsc - (double)b->tsc) - tsc_stats.mean) / tsc_stats.var;
+
+  return sqrt(va_dist * va_dist + ip_dist * ip_dist + tsc_dist * tsc_dist);
+}
+
+void cluster_cluster(struct hemem_page *page, bool is_hot)
+{
+  struct hemem_page *cur_page, *tmp;
+  // find pages close in "distance"
+  double threshold = 0.01;
+  struct pebs_record *main_page = find_record(page->va);
+  assert(main_page != NULL);
+
+  for (uint32_t i = 0; i < MAX_PAGES; i++) {
+    double dist = cluster_distance(main_page, &page_records[i]);
+    if (dist < threshold) {
+      // Found a close page
+      struct hemem_page *cur_page = get_hemem_page(page_records[i].va);
+      if (cur_page != NULL && cur_page->va != 0) {
+        // Do something with cur_page
+        if (is_hot) {
+          if (!page->hot && !page->ring_present) {
+            // printf("Making Hot request: 0x%lx\n", cur_page->va);
+            make_hot_request(cur_page);
+          }
+        } else {
+          if (page->hot && !page->ring_present) {
+            // printf("Making Cold request: 0x%lx\n", cur_page->va);
+            make_cold_request(cur_page);
+          }
+        }
+      }
+    }
+  }
+
+}
+
 void *pebs_scan_thread()
 {
 #ifdef SAMPLE_BASED_COOLING
@@ -171,21 +330,28 @@ void *pebs_scan_thread()
                   // printf("hemem sample: 0x%lx\n", page->va);
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
+                  // add_or_update_record(rdtscp(), page->va, ps->ip, i, j);
+                  
+                  // ADD_PEBS_RECORD(rdtscp(), ps->addr, ps->ip, i, j);
+                  // cluster_cluster()
+                  // cluster_stride(page);
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
                   //  if (!page->hot && !page->ring_present) {
                   //      make_hot_request(page);
                   //  }
                   //}
-                  /*else*/ if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
-                    if (!page->hot && !page->ring_present) {
-                        make_hot_request(page);
-                    }
-                  }
-                  else if (/*(page->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-                    if (page->hot && !page->ring_present) {
-                        make_cold_request(page);
-                    }
-                 }
+                //   /*else*/ if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
+                //     if (!page->hot && !page->ring_present) {
+                //         make_hot_request(page);
+                //         cluster_cluster(page, true);
+                //     }
+                //   }
+                //   else if (/*(page->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+                //     if (page->hot && !page->ring_present) {
+                //         make_cold_request(page);
+                //         cluster_cluster(page, false);
+                //     }
+                //  }
 
                   accesses_cnt[j]++;
                   core_accesses_cnt[i]++;
@@ -783,6 +949,8 @@ void pebs_init(void)
   pthread_t scan_thread;
   uint64_t** buffer;
   char logpath[32];
+
+  memset(page_records, 0, MAX_PAGES * sizeof(struct pebs_record));
 
   internal_call = true;
 
