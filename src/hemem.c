@@ -51,23 +51,23 @@ int dramfd = -1;
 int nvmfd = -1;
 long uffd = -1;
 
-bool is_init = false;
-bool timing = false;
+_Atomic bool is_init = false;
+_Atomic bool timing = false;
 
-uint64_t mem_mmaped = 0;
-uint64_t mem_allocated = 0;
-uint64_t pages_allocated = 0;
-uint64_t pages_freed = 0;
-uint64_t fastmem_allocated = 0;
-uint64_t slowmem_allocated = 0;
-uint64_t wp_faults_handled = 0;
-uint64_t missing_faults_handled = 0;
-uint64_t migrations_up = 0;
-uint64_t migrations_down = 0;
-uint64_t bytes_migrated = 0;
-uint64_t memcpys = 0;
-uint64_t memsets = 0;
-uint64_t migration_waits = 0;
+_Atomic uint64_t mem_mmaped = 0;
+_Atomic uint64_t mem_allocated = 0;
+_Atomic uint64_t pages_allocated = 0;
+_Atomic uint64_t pages_freed = 0;
+_Atomic uint64_t fastmem_allocated = 0;
+_Atomic uint64_t slowmem_allocated = 0;
+_Atomic uint64_t wp_faults_handled = 0;
+_Atomic uint64_t missing_faults_handled = 0;
+_Atomic uint64_t migrations_up = 0;
+_Atomic uint64_t migrations_down = 0;
+_Atomic uint64_t bytes_migrated = 0;
+_Atomic uint64_t memcpys = 0;
+_Atomic uint64_t memsets = 0;
+_Atomic uint64_t migration_waits = 0;
 
 static bool cr3_set = false;
 uint64_t cr3 = 0;
@@ -167,6 +167,9 @@ static void *hemem_stats_thread()
   if (s != 0) {
     perror("pthread_setaffinity_np");
     assert(0);
+  }
+  while (!miss_ratio_f_opened) {
+    sleep(1);
   }
 
   for (;;) {
@@ -579,7 +582,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
 
    
 //  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
-    // hemem_mmap_populate(p, length);
+    hemem_mmap_populate(p, length);
 //  }
 
   mem_mmaped = length;
@@ -690,6 +693,12 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   internal_call = true;
 
   assert(!page->in_dram);
+  pthread_mutex_lock(&page->page_lock);
+  if (page->in_dram) {
+    pthread_mutex_unlock(&page->page_lock);
+    internal_call = false;
+    return;
+  }
 
   //LOG("hemem_migrate_up: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
   
@@ -780,6 +789,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
 #endif
 
   bytes_migrated += pagesize;
+  pthread_mutex_unlock(&page->page_lock);
   
   //LOG("hemem_migrate_up: new pte: %lx\n", hemem_va_to_pa(page->va));
 
@@ -806,6 +816,12 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   internal_call = true;
 
   assert(page->in_dram);
+  pthread_mutex_lock(&page->page_lock);
+  if (!page->in_dram) {
+    pthread_mutex_unlock(&page->page_lock);
+    internal_call = false;
+    return;
+  }
 
   //LOG("hemem_migrate_down: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
 
@@ -894,6 +910,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
 #endif
 
   bytes_migrated += pagesize;
+  pthread_mutex_unlock(&page->page_lock);
 
   //LOG("hemem_migrate_down: new pte: %lx\n", hemem_va_to_pa(page->va));
 

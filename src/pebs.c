@@ -15,6 +15,7 @@
 #include <sched.h>
 #include <sys/ioctl.h>
 #include <math.h>
+#include <errno.h>
 
 #include "hemem.h"
 #include "pebs.h"
@@ -128,16 +129,17 @@ uint64_t global_clock = 0;
 
 uint64_t hemem_pages_cnt = 0;
 uint64_t other_pages_cnt = 0;
-uint64_t total_pages_cnt = 0;
+_Atomic uint64_t total_pages_cnt = 0;
 uint64_t accesses_cnt[NPBUFTYPES];
 uint64_t core_accesses_cnt[PEBS_NPROCS];
-uint64_t zero_pages_cnt = 0;
-uint64_t throttle_cnt = 0;
-uint64_t unthrottle_cnt = 0;
+_Atomic uint64_t zero_pages_cnt = 0;
+_Atomic uint64_t throttle_cnt = 0;
+_Atomic uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
 
 _Atomic volatile double miss_ratio = -1.0;
 FILE *miss_ratio_f = NULL;
+bool _Atomic miss_ratio_f_opened = false;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -248,7 +250,6 @@ double cluster_distance(struct pebs_record *a, struct pebs_record *b)
 
 void cluster_cluster(struct hemem_page *page, bool is_hot)
 {
-  struct hemem_page *cur_page, *tmp;
   // find pages close in "distance"
   double threshold = 0.01;
   struct pebs_record *main_page = find_record(page->va);
@@ -332,7 +333,6 @@ void *pebs_scan_thread()
                   page->tot_accesses[j]++;
                   // add_or_update_record(rdtscp(), page->va, ps->ip, i, j);
                   
-                  // ADD_PEBS_RECORD(rdtscp(), ps->addr, ps->ip, i, j);
                   // cluster_cluster()
                   // cluster_stride(page);
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
@@ -340,18 +340,18 @@ void *pebs_scan_thread()
                   //      make_hot_request(page);
                   //  }
                   //}
-                //   /*else*/ if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
-                //     if (!page->hot && !page->ring_present) {
-                //         make_hot_request(page);
-                //         cluster_cluster(page, true);
-                //     }
-                //   }
-                //   else if (/*(page->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-                //     if (page->hot && !page->ring_present) {
-                //         make_cold_request(page);
-                //         cluster_cluster(page, false);
-                //     }
-                //  }
+                  /*else*/ if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
+                    if (!page->hot && !page->ring_present) {
+                        make_hot_request(page);
+                        // cluster_cluster(page, true);
+                    }
+                  }
+                  else if (/*(page->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+                    if (page->hot && !page->ring_present) {
+                        make_cold_request(page);
+                        // cluster_cluster(page, false);
+                    }
+                 }
 
                   accesses_cnt[j]++;
                   core_accesses_cnt[i]++;
@@ -909,8 +909,11 @@ static struct hemem_page* pebs_allocate_page()
 
     return page;
   }
+  // perror("pebs_allocate_page: mmap/mlock failed");
+  fprintf(stderr, "errno=%d (%s)\n", errno, strerror(errno));
 
   assert(!"Out of memory");
+  return NULL;
 }
 
 struct hemem_page* pebs_pagefault(void)
@@ -962,6 +965,7 @@ void pebs_init(void)
     perror("miss ratio file fopen");
   }
   assert(miss_ratio_f != NULL);
+  miss_ratio_f_opened = true;
 
   char* pebs_start_cpu_string = getenv("PEBS_START_CPU");
   if(pebs_start_cpu_string != NULL)

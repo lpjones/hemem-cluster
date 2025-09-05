@@ -58,10 +58,11 @@ extern uint64_t fault_thread_cpu;
 extern uint64_t stats_thread_cpu;
 
 extern FILE* miss_ratio_f;
+extern _Atomic bool miss_ratio_f_opened;
 
 #define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L * 1024L))
+#define DRAMSIZE_DEFAULT  (1L * (1024L * 1024L * 1024L))
 
 #define NVMOFFSET_DEFAULT (0)
 #define DRAMOFFSET_DEFAULT (0)
@@ -101,7 +102,7 @@ extern FILE *hememlogf;
 //#define LOG(str, ...) while(0) {}
 
 extern FILE *timef;
-extern bool timing;
+extern _Atomic bool timing;
 
 struct __attribute__((__packed__)) mig_record {
   double val;
@@ -177,10 +178,10 @@ extern FILE *statsf;
 extern uint64_t cr3;
 extern int dramfd;
 extern int nvmfd;
-extern bool is_init;
-extern uint64_t missing_faults_handled;
-extern uint64_t migrations_up;
-extern uint64_t migrations_down;
+extern _Atomic bool is_init;
+extern _Atomic uint64_t missing_faults_handled;
+extern _Atomic uint64_t migrations_up;
+extern _Atomic uint64_t migrations_down;
 extern __thread bool internal_malloc;
 extern __thread bool old_internal_call;
 extern __thread bool internal_call;
@@ -251,6 +252,7 @@ static inline enum pagetypes pagesize_to_pt(uint64_t pagesize)
     case PAGE_SIZE: return BASEP;
     default: assert(!"Unknown page ssize");
   }
+  return BASEP;
 }
 
 void hemem_init();

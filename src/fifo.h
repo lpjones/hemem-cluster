@@ -12,7 +12,7 @@
 struct fifo_list {
   struct hemem_page *first, *last;
   pthread_mutex_t list_lock;
-  size_t numentries;
+  _Atomic size_t numentries;
 };
 
 

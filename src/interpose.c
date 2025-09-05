@@ -21,6 +21,7 @@ int (*libc_munmap)(void *addr, size_t length) = NULL;
 void* (*libc_malloc)(size_t size) = NULL;
 void (*libc_free)(void* ptr) = NULL;
 
+
 static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, off_t offset, uint64_t *result)
 {
   // if (length == 2147487744) {
@@ -67,12 +68,12 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
     return 1;
   }
 
-#ifndef LLAMA
-  if (length < 4UL * 1024UL) {
+// #ifndef LLAMA
+  if (length <= 2UL * 1024UL * 1024UL) {
     LOG("hemem interpose calling libc mmap due to small allocation size: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
-#endif
+// #endif
 
   LOG("hemem interpose: calling hemem mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
   if ((*result = (uint64_t)hemem_mmap(addr, length, prot, flags, fd, offset)) == (uint64_t)MAP_FAILED) {
@@ -81,7 +82,6 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   }
   return 0;
 }
-
 
 
 static int munmap_filter(void *addr, size_t length, uint64_t* result)
@@ -110,7 +110,7 @@ static void* bind_symbol(const char *sym)
   }
   return ptr;
 }
-
+__attribute__((no_sanitize("thread")))
 static int hook(long syscall_number, long arg0, long arg1, long arg2, long arg3,	long arg4, long arg5,	long *result)
 {
 	if (syscall_number == SYS_mmap) {
