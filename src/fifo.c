@@ -51,6 +51,7 @@ struct hemem_page *dequeue_fifo(struct fifo_list *queue)
   return ret;
 }
 
+// Only in pebs_policy_thread
 void page_list_remove_page(struct fifo_list *list, struct hemem_page *page)
 {
   pthread_mutex_lock(&(list->list_lock));
@@ -86,6 +87,7 @@ void page_list_remove_page(struct fifo_list *list, struct hemem_page *page)
   pthread_mutex_unlock(&(list->list_lock));
 }
 
+// Only in pebs_policy_thread
 void next_page(struct fifo_list *list, struct hemem_page *page, struct hemem_page **next_page)
 {
     pthread_mutex_lock(&(list->list_lock));

@@ -117,6 +117,8 @@ static void move_hot(void)
 
   memset(transition, 0, NPAGETYPES * sizeof(struct mmgr_list));
 
+  printf("in move_hot\n");
+
   // identify pages for movement and mark read-only until out of fastmem
   while (transition_bytes + pt_to_pagesize(HUGEP) < fastmem_freebytes) {
     n = mmgr_list_remove(&mem_active[SLOWMEM][HUGEP]);

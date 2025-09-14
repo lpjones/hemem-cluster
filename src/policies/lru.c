@@ -49,6 +49,7 @@ static void lru_migrate_down(struct hemem_page *page, uint64_t offset)
 
 static void lru_migrate_up(struct hemem_page *page, uint64_t offset)
 {
+  printf("lru migrate up page %lx to dram offset %lx\n", page->va, offset);
   struct timeval start, end;
 
   gettimeofday(&start, NULL);

@@ -68,6 +68,7 @@ _Atomic uint64_t bytes_migrated = 0;
 _Atomic uint64_t memcpys = 0;
 _Atomic uint64_t memsets = 0;
 _Atomic uint64_t migration_waits = 0;
+pid_t main_thread = 0;
 
 static bool cr3_set = false;
 uint64_t cr3 = 0;
@@ -83,6 +84,7 @@ pthread_t stats_thread;
 
 struct hemem_page *pages = NULL;
 pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t change_page_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
@@ -189,6 +191,7 @@ void add_page(struct hemem_page *page)
   pthread_mutex_lock(&pages_lock);
   HASH_FIND(hh, pages, &(page->va), sizeof(uint64_t), p);
   if (p != NULL) {
+    // printf("HeMem page already exists: 0x%lx\n", page->va);
     LOG("HeMem page already exists: 0x%lx\n", page->va);
     pthread_mutex_unlock(&pages_lock);
     internal_call = old_internal_call;
@@ -229,6 +232,8 @@ void hemem_init()
   char logpath[32];
 
   internal_call = true;
+  main_thread = getpid();
+
 /*
   {
     // This call is dangerous. Ideally, all printf's should be
@@ -369,6 +374,7 @@ void hemem_init()
   r = pthread_mutex_init(&pmemcpy.lock, NULL);
   assert(r == 0);
 
+
   for (i = 0; i < MAX_COPY_THREADS; i++) {
     s = pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)i);
     assert(s == 0);
@@ -460,7 +466,6 @@ static void hemem_mmap_populate(void* addr, size_t length)
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     page = pagefault();
     assert(page != NULL);
-
     // let policy algorithm do most of the heavy lifting of finding a free page
     offset = page->devdax_offset;
     in_dram = page->in_dram;
@@ -504,6 +509,9 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
     // use mmap return addr to track new page's virtual address
     page->va = (uint64_t)newptr;
+    // printf("New HeMem page: 0x%lx\n", page->va);
+    // printf("page boundry: 0x%lx\n", page_boundry);
+    // printf("length: %zu\n", length);
     assert(page->va != 0);
     assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
@@ -520,6 +528,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
     // place in hemem's page tracking list
     add_page(page);
     page_boundry += pagesize;
+    pthread_mutex_unlock(&page->page_lock);
   }
 
 }
@@ -532,7 +541,6 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   struct uffdio_cr3 uffdio_cr3;
 
   internal_call = true;
-
   assert(is_init);
   assert(length != 0);
   
@@ -566,8 +574,14 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   uffdio_register.range.len = length;
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
+  // printf("addr: %p, length: %zu, mem_allocated: %zu\n", p, length, mem_allocated);
+  // printf("uffd: %ld, start: %lx, len: %zu pages: %zu mem_allocated: %zu\n", 
+  //       uffd, (uint64_t)p, length, pages_allocated - pages_freed, mem_allocated);
+
+
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
+    printf("in hemem_mmap: uffd: %ld, start: %lx, len: %zu\n", uffd, (uint64_t)p, length);
     assert(0);
   }
 
@@ -582,7 +596,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
 
    
 //  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
-    hemem_mmap_populate(p, length);
+    // hemem_mmap_populate(p, length);
 //  }
 
   mem_mmaped = length;
@@ -607,11 +621,25 @@ int hemem_munmap(void* addr, size_t length)
   // for each page in region specified...
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     // find the page in hemem's trackign list
+    pthread_mutex_lock(&change_page_lock);
     page = find_page(page_boundry);
     if (page != NULL) {
+      pthread_mutex_lock(&page->page_lock);
+      pthread_mutex_unlock(&change_page_lock);
+
+      // unregister with userfaultfd
+      struct uffdio_register uffdio_unregister;
+      uffdio_unregister.range.start = page->va;
+      uffdio_unregister.range.len = pt_to_pagesize(page->pt);
+      if (ioctl(uffd, UFFDIO_UNREGISTER, &uffdio_unregister) == -1) {
+        perror("ioctl uffdio_unregister");
+        assert(0);
+      }
       // remove page form hemem's and policy's list
       remove_page(page);
       mmgr_remove(page);
+
+      
 
       mem_allocated -= pt_to_pagesize(page->pt);
       mem_mmaped -= pt_to_pagesize(page->pt);
@@ -619,11 +647,14 @@ int hemem_munmap(void* addr, size_t length)
 
       // move to next page
       page_boundry += pt_to_pagesize(page->pt);
+      pthread_mutex_unlock(&page->page_lock);
     }
     else {
+      pthread_mutex_unlock(&change_page_lock);
       // TODO: deal with holes?
       //LOG("hemem_mmunmap: no page to umnap\n");
       //assert(0);
+      // printf("hemem_munmap: no page to unmap at addr: %lx\n", page_boundry);
       page_boundry += PAGE_SIZE;
     }
   }
@@ -693,13 +724,6 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   internal_call = true;
 
   assert(!page->in_dram);
-  pthread_mutex_lock(&page->page_lock);
-  if (page->in_dram) {
-    pthread_mutex_unlock(&page->page_lock);
-    internal_call = false;
-    return;
-  }
-
   //LOG("hemem_migrate_up: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
   
   gettimeofday(&migrate_start, NULL);
@@ -728,6 +752,8 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   uffdio_dma_copy.count = 1;
   uffdio_dma_copy.mode = 0;
   uffdio_dma_copy.copy = 0;
+  printf("DMA_COPY: src=%p dst=%p len=%lu\n", old_addr, new_addr, pagesize);
+
   if (ioctl(uffd, UFFDIO_DMA_COPY, &uffdio_dma_copy) == -1) {
     LOG("hemem_migrate_up, ioctl dma_copy fails for src:%lx, dst:%lx\n", (uint64_t)old_addr, (uint64_t)new_addr); 
     assert(false);
@@ -771,6 +797,9 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+    // printf("hemem_migrate_up, ioctl fails for uffd: %ld, start: %lx, len: %zu\n", 
+    //        uffd, (uint64_t)newptr, pagesize);
+    fprintf(stderr, "errno=%d (%s)\n", errno, strerror(errno));
     perror("ioctl uffdio_register");
     assert(0);
   }
@@ -789,7 +818,6 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
 #endif
 
   bytes_migrated += pagesize;
-  pthread_mutex_unlock(&page->page_lock);
   
   //LOG("hemem_migrate_up: new pte: %lx\n", hemem_va_to_pa(page->va));
 
@@ -816,12 +844,6 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   internal_call = true;
 
   assert(page->in_dram);
-  pthread_mutex_lock(&page->page_lock);
-  if (!page->in_dram) {
-    pthread_mutex_unlock(&page->page_lock);
-    internal_call = false;
-    return;
-  }
 
   //LOG("hemem_migrate_down: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
 
@@ -910,7 +932,6 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
 #endif
 
   bytes_migrated += pagesize;
-  pthread_mutex_unlock(&page->page_lock);
 
   //LOG("hemem_migrate_down: new pte: %lx\n", hemem_va_to_pa(page->va));
 
@@ -1000,12 +1021,11 @@ void handle_missing_fault(uint64_t page_boundry)
     return;
   }
 */
-
   gettimeofday(&missing_start, NULL);
 
   gettimeofday(&start, NULL);
   // let policy algorithm do most of the heavy lifting of finding a free page
-  page = pagefault(); 
+  page = pagefault();
   assert(page != NULL);
   
   gettimeofday(&end, NULL);
@@ -1064,6 +1084,7 @@ void handle_missing_fault(uint64_t page_boundry)
   uffdio_register.ioctls = 0;
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
+    printf("in handle_missing_fault: addr: %p, length: %zu\n", newptr, pagesize);
     assert(0);
   }
   gettimeofday(&end, NULL);
@@ -1079,6 +1100,7 @@ void handle_missing_fault(uint64_t page_boundry)
   page->mig_start = null_mig;
   //page->pa = hemem_va_to_pa(page);
  
+  pages_allocated++;
   mem_allocated += pagesize;
 
   //LOG("hemem_missing_fault: va: %lx assigned to %s frame %lu  pte: %lx\n", page->va, (in_dram ? "DRAM" : "NVM"), page->devdax_offset / pagesize, hemem_va_to_pa(page->va));
@@ -1087,11 +1109,10 @@ void handle_missing_fault(uint64_t page_boundry)
   add_page(page);
 
   missing_faults_handled++;
-  pages_allocated++;
   gettimeofday(&missing_end, NULL);
   LOG_TIME(HEMEM_MISSING_FAULT, elapsed(&missing_start, &missing_end));
-
   internal_call = false;
+  pthread_mutex_unlock(&page->page_lock);
 }
 
 
@@ -1299,11 +1320,10 @@ void hemem_print_stats(FILE *fd)
    mmgr_stats(); 
 }
 
-
 void hemem_clear_stats()
 {
-  pages_allocated = 0;
-  pages_freed = 0;
+  // pages_allocated = 0;
+  // pages_freed = 0;
   missing_faults_handled = 0;
   migrations_up = 0;
   migrations_down = 0;

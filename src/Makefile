@@ -1,6 +1,6 @@
 CC = gcc
 # CFLAGS = -g -Wall -O3 -fPIC
-CFLAGS = -g3 -Wall -O0 -fPIC #-fsanitize=thread -fno-omit-frame-pointer
+CFLAGS = -g3 -Wall -O0 -fPIC -fno-omit-frame-pointer#-fsanitize=thread -fno-omit-frame-pointer 
 LDFLAGS = -shared #-ltsan #-fsanitize=thread -Wl,--no-as-needed
 INCLUDES = -I../linux/kbuild/usr/include/
 LIBS = -lm -lpthread

@@ -40,7 +40,7 @@ extern "C" {
 //#define HEMEM_DEBUG
 #define STATS_THREAD
 
-#define USE_DMA
+// #define USE_DMA
 #define NUM_CHANNS 2
 #define SIZE_PER_DMA_REQUEST (1024*1024)
 
@@ -56,13 +56,16 @@ extern uint64_t hemem_start_cpu;
 extern uint64_t num_cores;
 extern uint64_t fault_thread_cpu;
 extern uint64_t stats_thread_cpu;
+extern pid_t main_thread;
+extern pthread_mutex_t pages_lock;
+extern pthread_mutex_t change_page_lock;
 
 extern FILE* miss_ratio_f;
 extern _Atomic bool miss_ratio_f_opened;
 
 #define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (1L * (1024L * 1024L * 1024L))
+#define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L * 1024L))
 
 #define NVMOFFSET_DEFAULT (0)
 #define DRAMOFFSET_DEFAULT (0)
@@ -262,6 +265,7 @@ int hemem_munmap(void* addr, size_t length);
 void *handle_fault();
 void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset);
 void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset);
+struct hemem_page* find_page(uint64_t va);
 void hemem_wp_page(struct hemem_page *page, bool protect);
 void hemem_promote_pages(uint64_t addr);
 void hemem_demote_pages(uint64_t addr);
