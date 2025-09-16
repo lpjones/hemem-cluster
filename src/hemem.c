@@ -53,6 +53,7 @@ long uffd = -1;
 
 _Atomic bool is_init = false;
 _Atomic bool timing = false;
+_Atomic int internal_call = 0;
 
 _Atomic uint64_t mem_mmaped = 0;
 _Atomic uint64_t mem_allocated = 0;
@@ -86,11 +87,9 @@ struct hemem_page *pages = NULL;
 pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t change_page_lock = PTHREAD_MUTEX_INITIALIZER;
 
+
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
-
-__thread bool internal_call = false;
-__thread bool old_internal_call = false;
 
 #ifndef USE_DMA
 struct pmemcpy {
@@ -185,8 +184,6 @@ static void *hemem_stats_thread()
 
 void add_page(struct hemem_page *page)
 {
-  old_internal_call = internal_call;
-  internal_call = true;
   struct hemem_page *p;
   pthread_mutex_lock(&pages_lock);
   HASH_FIND(hh, pages, &(page->va), sizeof(uint64_t), p);
@@ -194,13 +191,11 @@ void add_page(struct hemem_page *page)
     // printf("HeMem page already exists: 0x%lx\n", page->va);
     LOG("HeMem page already exists: 0x%lx\n", page->va);
     pthread_mutex_unlock(&pages_lock);
-    internal_call = old_internal_call;
     return;
   }
   assert(p == NULL);
   HASH_ADD(hh, pages, va, sizeof(uint64_t), page);
   pthread_mutex_unlock(&pages_lock);
-  internal_call = old_internal_call;
 }
 
 void remove_page(struct hemem_page *page)
@@ -231,7 +226,7 @@ void hemem_init()
 #endif
   char logpath[32];
 
-  internal_call = true;
+  internal_call++;
   main_thread = getpid();
 
 /*
@@ -258,7 +253,7 @@ void hemem_init()
   else
     num_cores = PEBS_NPROCS;
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/debuglog-hem.txt");
+  snprintf(&logpath[0], sizeof(logpath) - 1, "debuglog-hem.txt");
   hememlogf = fopen(logpath, "w+");
   if (hememlogf == NULL) {
     perror("log file open\n");
@@ -311,14 +306,14 @@ void hemem_init()
     assert(0);
   }
 
-  timef = fopen("/tmp/times-hem.bin", "w+");
+  timef = fopen("times-hem.bin", "w+");
   if (timef == NULL) {
     perror("time file fopen\n");
     assert(0);
   }
 
   char stats_name_buf[25]; 
-  int snret = snprintf(stats_name_buf, 25, "/tmp/stats-hem.txt");
+  int snret = snprintf(stats_name_buf, 25, "stats-hem.txt");
   assert(snret > 0);
   statsf = fopen(stats_name_buf, "w+");
   if (statsf == NULL) {
@@ -409,7 +404,7 @@ void hemem_init()
 
   LOG("hemem_init: finished\n");
 
-  internal_call = false;
+  internal_call--;
 }
 
 
@@ -540,7 +535,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   void *p;
   struct uffdio_cr3 uffdio_cr3;
 
-  internal_call = true;
+  internal_call++;
   assert(is_init);
   assert(length != 0);
   
@@ -596,12 +591,12 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
 
    
 //  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
-    // hemem_mmap_populate(p, length);
+    hemem_mmap_populate(p, length);
 //  }
 
   mem_mmaped = length;
   
-  internal_call = false;
+  internal_call--;
   
   return p;
 }
@@ -613,7 +608,7 @@ int hemem_munmap(void* addr, size_t length)
   struct hemem_page *page;
   int ret;
 
-  internal_call = true;
+  internal_call++;
 
 
   //fprintf(stderr, "munmap(%p, %lu)\n", addr, length);
@@ -662,7 +657,7 @@ int hemem_munmap(void* addr, size_t length)
 
   ret = libc_munmap(addr, length);
 
-  internal_call = false;
+  internal_call--;
 
   return ret;
 }
@@ -721,10 +716,9 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   struct uffdio_dma_copy uffdio_dma_copy;
 #endif
 
-  internal_call = true;
+  internal_call++;
 
   assert(!page->in_dram);
-  //LOG("hemem_migrate_up: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
   
   gettimeofday(&migrate_start, NULL);
   
@@ -799,6 +793,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     // printf("hemem_migrate_up, ioctl fails for uffd: %ld, start: %lx, len: %zu\n", 
     //        uffd, (uint64_t)newptr, pagesize);
+    fprintf(stderr, "internal_call=%d\n", internal_call);
     fprintf(stderr, "errno=%d (%s)\n", errno, strerror(errno));
     perror("ioctl uffdio_register");
     assert(0);
@@ -824,7 +819,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   gettimeofday(&migrate_end, NULL);  
   LOG_TIME(HEMEM_MIGRATE_UP, elapsed(&migrate_start, &migrate_end));
 
-  internal_call = false;
+  internal_call--;
 }
 
 
@@ -841,7 +836,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   struct uffdio_dma_copy uffdio_dma_copy;
 #endif
 
-  internal_call = true;
+  internal_call++;
 
   assert(page->in_dram);
 
@@ -872,6 +867,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   uffdio_dma_copy.count = 1;
   uffdio_dma_copy.mode = 0;
   uffdio_dma_copy.copy = 0;
+  printf("DMA_COPY: src=%p dst=%p len=%lu\n", old_addr, new_addr, pagesize);
   if (ioctl(uffd, UFFDIO_DMA_COPY, &uffdio_dma_copy) == -1) {
     LOG("hemem_migrate_down, ioctl dma_copy fails for src:%lx, dst:%lx\n", (uint64_t)old_addr, (uint64_t)new_addr); 
     assert(false);
@@ -938,7 +934,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   gettimeofday(&migrate_end, NULL);  
   LOG_TIME(HEMEM_MIGRATE_DOWN, elapsed(&migrate_start, &migrate_end));
 
-  internal_call = false;
+  internal_call--;
 }
 
 void hemem_wp_page(struct hemem_page *page, bool protect)
@@ -949,7 +945,7 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   struct timeval start, end;
   uint64_t pagesize = pt_to_pagesize(page->pt);
 
-  internal_call = true;
+  internal_call++;
 
   //LOG("hemem_wp_page: wp addr %lx pte: %lx\n", addr, hemem_va_to_pa(addr));
 
@@ -972,7 +968,7 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
 
   LOG_TIME(UFFDIO_WRITEPROTECT1, elapsed(&start, &end));
 
-  internal_call = false;
+  internal_call--;
 }
 
 
@@ -980,7 +976,7 @@ void handle_wp_fault(uint64_t page_boundry)
 {
   struct hemem_page *page;
 
-  internal_call = true;
+  internal_call++;
 
   page = find_page(page_boundry);
   assert(page != NULL);
@@ -990,7 +986,7 @@ void handle_wp_fault(uint64_t page_boundry)
   LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n", page_boundry);
 
   while (page->migrating);
-  internal_call = false;
+  internal_call--;
 }
 
 
@@ -1007,7 +1003,7 @@ void handle_missing_fault(uint64_t page_boundry)
   bool in_dram;
   uint64_t pagesize;
 
-  internal_call = true;
+  internal_call++;
 
   assert(page_boundry != 0);
 
@@ -1111,7 +1107,7 @@ void handle_missing_fault(uint64_t page_boundry)
   missing_faults_handled++;
   gettimeofday(&missing_end, NULL);
   LOG_TIME(HEMEM_MISSING_FAULT, elapsed(&missing_start, &missing_end));
-  internal_call = false;
+  internal_call--;
   pthread_mutex_unlock(&page->page_lock);
 }
 

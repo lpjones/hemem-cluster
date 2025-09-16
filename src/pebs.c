@@ -471,14 +471,14 @@ void make_hot(struct hemem_page* page)
     return;
   }
 
-  if (page->in_dram) {
-    assert(page->list == &dram_cold_list);
+  if (page->in_dram && page->list == &dram_cold_list) {
+    // assert(page->list == &dram_cold_list);
     page_list_remove_page(&dram_cold_list, page);
     page->hot = true;
     enqueue_fifo(&dram_hot_list, page);
   }
-  else {
-    assert(page->list == &nvm_cold_list);
+  else if (!page->in_dram && page->list == &nvm_cold_list) {
+    // assert(page->list == &nvm_cold_list);
     page_list_remove_page(&nvm_cold_list, page);
     page->hot = true;
     enqueue_fifo(&nvm_hot_list, page);
@@ -502,14 +502,14 @@ void make_cold(struct hemem_page* page)
     return;
   }
 
-  if (page->in_dram) {
-    assert(page->list == &dram_hot_list);
+  if (page->in_dram && page->list == &dram_hot_list) {
+    // assert(page->list == &dram_hot_list);
     page_list_remove_page(&dram_hot_list, page);
     page->hot = false;
     enqueue_fifo(&dram_cold_list, page);
   }
-  else {
-    assert(page->list == &nvm_hot_list);
+  else if (!page->in_dram && page->list == &nvm_hot_list) {
+    // assert(page->list == &nvm_hot_list);
     page_list_remove_page(&nvm_hot_list, page);
     page->hot = false;
     enqueue_fifo(&nvm_cold_list, page);
@@ -705,7 +705,7 @@ void *pebs_policy_thread()
         struct fifo_list *list;
         pthread_mutex_lock(&change_page_lock);
         page = (struct hemem_page*)ring_buf_get(free_page_ring);
-        if (page == NULL) {
+        if (page == NULL || page->list == NULL) {
             pthread_mutex_unlock(&change_page_lock);
             continue;
         }
@@ -740,11 +740,6 @@ void *pebs_policy_thread()
         pthread_mutex_lock(&page->page_lock);
         pthread_mutex_unlock(&change_page_lock);
         if (!page->present) {
-          if (page->in_dram) {
-            assert(page->list == &dram_free_list);
-          } else {
-            assert(page->list == &nvm_free_list);
-          }
           // printf("page %lx not in hot ring\n", page->va);
           // page has been freed
           pthread_mutex_unlock(&page->page_lock);
@@ -1019,11 +1014,11 @@ void pebs_init(void)
 
   memset(page_records, 0, MAX_PAGES * sizeof(struct pebs_record));
 
-  internal_call = true;
+  internal_call++;
 
   LOG("pebs_init: started\n");
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-hem.txt");
+  snprintf(&logpath[0], sizeof(logpath) - 1, "log-hem.txt");
   miss_ratio_f = fopen(logpath, "w");
   if (miss_ratio_f == NULL) {
     perror("miss ratio file fopen");
@@ -1115,64 +1110,11 @@ void pebs_init(void)
   r = pthread_create(&kswapd_thread, NULL, pebs_policy_thread, NULL);
   assert(r == 0);
 
-  // pthread_mutex_init(&(dram_free_list.list_lock), NULL);
-  // LOG("DRAM pages: %ld\n", dramsize / PAGE_SIZE);
-  // LOG("DRAM page meta data size: %lu\n", sizeof(struct hemem_page) * (dramsize / PAGE_SIZE));
-  // for (int i = 0; i < dramsize / PAGE_SIZE; i++) {
-  //   struct hemem_page *p = libc_mmap(NULL, sizeof(struct hemem_page), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  //   memset(p, 0, sizeof(struct hemem_page));
-  //   p->devdax_offset = i * PAGE_SIZE + dramoffset;
-  //   p->present = false;
-  //   p->in_dram = true;
-  //   p->ring_present = false;
-  //   p->pt = pagesize_to_pt(PAGE_SIZE);
-  //   pthread_mutex_init(&(p->page_lock), NULL);
-
-  //   enqueue_fifo(&dram_free_list, p);
-  // }
-
-  // pthread_mutex_init(&(nvm_free_list.list_lock), NULL);
-  // LOG("NVM pages: %ld\n", nvmsize / PAGE_SIZE);
-  // LOG("NVM page meta data size: %lu\n", sizeof(struct hemem_page) * (nvmsize / PAGE_SIZE));
-  // for (int i = 0; i < nvmsize / PAGE_SIZE; i++) {
-  //   struct hemem_page *p = libc_mmap(NULL, sizeof(struct hemem_page), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  //   memset(p, 0, sizeof(struct hemem_page));
-  //   p->devdax_offset = i * PAGE_SIZE + nvmoffset;
-  //   p->present = false;
-  //   p->in_dram = false;
-  //   p->ring_present = false;
-  //   p->pt = pagesize_to_pt(PAGE_SIZE);
-  //   pthread_mutex_init(&(p->page_lock), NULL);
-
-  //   enqueue_fifo(&nvm_free_list, p);
-  // }
-
-  // pthread_mutex_init(&(dram_hot_list.list_lock), NULL);
-  // pthread_mutex_init(&(dram_cold_list.list_lock), NULL);
-  // pthread_mutex_init(&(nvm_hot_list.list_lock), NULL);
-  // pthread_mutex_init(&(nvm_cold_list.list_lock), NULL);
-
-  // LOG("Creating ring buffers: 3 x (%lu)\n", sizeof(uint64_t*) * CAPACITY);
-  // buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  // assert(buffer && buffer != MAP_FAILED); 
-  // hot_ring = ring_buf_init(buffer, CAPACITY);
-  // buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  // assert(buffer && buffer != MAP_FAILED); 
-  // cold_ring = ring_buf_init(buffer, CAPACITY);
-  // buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  // assert(buffer && buffer != MAP_FAILED); 
-  // free_page_ring = ring_buf_init(buffer, CAPACITY);
-
-  // int r = pthread_create(&scan_thread, NULL, pebs_scan_thread, NULL);
-  // assert(r == 0);
-  
-  // r = pthread_create(&kswapd_thread, NULL, pebs_policy_thread, NULL);
-  // assert(r == 0);
   
   LOG("Memory management policy is PEBS\n");
 
   LOG("pebs_init: finished\n");
-  internal_call = false;
+  internal_call--;
 
 }
 

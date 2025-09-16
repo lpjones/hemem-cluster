@@ -33,7 +33,9 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
     return 1;
   }
 
+  assert(internal_call >= 0);
   if (internal_call) {
+    // printf("internal_call: %d\n", internal_call);
     LOG("hemem interpose: calling libc mmap due to internal memory call: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
@@ -108,23 +110,30 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
 
 static int munmap_filter(void *addr, size_t length, uint64_t* result)
 {
+
+  // Getting a 'free(): invalid pointer' error which is probably from this function
+  // Need to figure out how to tell when to use libc munmap vs hemem munmap
   //ensure_init();
   
   //TODO: figure out which munmap calls should go to libc vs hemem
   
-  if (internal_call) {
-    // printf("Internal munmap call, using libc munmap\n");
-    return 1;
-  }
+  // if (internal_call) {
+  //   // printf("Internal munmap call, using libc munmap\n");
+  //   return 1;
+  // }
 
-  struct hemem_page* page = find_page((uint64_t)addr);
+  // Need to not use a lock because possible race condition sequence:
+  // All on same thread: mmap called in application -> interpose mmap_filter -> hemem_mmap -> hemem_mmap_populate -> 
+  // add_page -> pthread_mutex_lock(&pages_lock) -> interrupt for munmap -> munmap_filter -> find_page -> pthread_mutex_lock(&pages_lock) -> deadlock on pages_lock
+  struct hemem_page *page = find_page((uint64_t)addr);
   if (page == NULL) {
-    // not a hemem page
-    // printf("Not a hemem page, using libc munmap\n");
+    // not a hemem-managed page, use libc munmap
+    LOG("hemem interpose: calling libc munmap due to non-hemem page: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
     return 1;
   }
   
-  // printf("hemem interpose: calling hemem munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
+  // Try to do hemem_munmap across the entire range. If it doesn't find a page at the address it skips it.
+  // But wait then how do we call libc_munmap for the pages that aren't in hemem's tracking list?
   if ((*result = hemem_munmap(addr, length)) == -1) {
     LOG("hemem munmap failed\n\tmunmap(0x%lx, %ld)\n", (uint64_t)addr, length);
   }

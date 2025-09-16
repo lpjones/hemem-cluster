@@ -62,6 +62,7 @@ extern pthread_mutex_t change_page_lock;
 
 extern FILE* miss_ratio_f;
 extern _Atomic bool miss_ratio_f_opened;
+extern _Atomic int internal_call;
 
 #define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L))
@@ -186,8 +187,6 @@ extern _Atomic uint64_t missing_faults_handled;
 extern _Atomic uint64_t migrations_up;
 extern _Atomic uint64_t migrations_down;
 extern __thread bool internal_malloc;
-extern __thread bool old_internal_call;
-extern __thread bool internal_call;
 extern __thread bool internal_munmap;
 
 enum memtypes {
