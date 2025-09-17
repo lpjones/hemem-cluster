@@ -11,7 +11,7 @@
 #include <assert.h>
 #include <malloc.h>
 
-#include<unistd.h>
+#include <unistd.h>
 
 #include "hemem.h"
 #include "interpose.h"
@@ -107,37 +107,34 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   return 0;
 }
 
-
+// Currently, this iterates over the entire region page by page unmapping any hemem pages it finds.
+// Then it returns that it failed so libc_munmap is called to unmap the entire region.
+// This is very inefficient if the munmap is for a non-hemem region. But assuming most large regions are
+// tracked by hemem, it should be fine.
 static int munmap_filter(void *addr, size_t length, uint64_t* result)
 {
-
   // Getting a 'free(): invalid pointer' error which is probably from this function
   // Need to figure out how to tell when to use libc munmap vs hemem munmap
   //ensure_init();
   
   //TODO: figure out which munmap calls should go to libc vs hemem
-  
-  // if (internal_call) {
-  //   // printf("Internal munmap call, using libc munmap\n");
-  //   return 1;
-  // }
 
   // Need to not use a lock because possible race condition sequence:
   // All on same thread: mmap called in application -> interpose mmap_filter -> hemem_mmap -> hemem_mmap_populate -> 
   // add_page -> pthread_mutex_lock(&pages_lock) -> interrupt for munmap -> munmap_filter -> find_page -> pthread_mutex_lock(&pages_lock) -> deadlock on pages_lock
-  struct hemem_page *page = find_page((uint64_t)addr);
-  if (page == NULL) {
-    // not a hemem-managed page, use libc munmap
-    LOG("hemem interpose: calling libc munmap due to non-hemem page: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
-    return 1;
-  }
+  // struct hemem_page *page = find_page((uint64_t)addr);
+  // if (page == NULL) {
+  //   // not a hemem-managed page, use libc munmap
+  //   LOG("hemem interpose: calling libc munmap due to non-hemem page: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
+  //   return 1;
+  // }
   
   // Try to do hemem_munmap across the entire range. If it doesn't find a page at the address it skips it.
-  // But wait then how do we call libc_munmap for the pages that aren't in hemem's tracking list?
+  // Then return 1 to call libc_munmap anyway to free the page since it already did that before
   if ((*result = hemem_munmap(addr, length)) == -1) {
     LOG("hemem munmap failed\n\tmunmap(0x%lx, %ld)\n", (uint64_t)addr, length);
   }
-  return 0;
+  return 1;
 }
 
 

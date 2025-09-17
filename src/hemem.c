@@ -84,7 +84,8 @@ pthread_t copy_threads[MAX_COPY_THREADS];
 pthread_t stats_thread;
 
 struct hemem_page *pages = NULL;
-pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
+// pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t pages_lock;
 pthread_mutex_t change_page_lock = PTHREAD_MUTEX_INITIALIZER;
 
 
@@ -369,6 +370,10 @@ void hemem_init()
   r = pthread_mutex_init(&pmemcpy.lock, NULL);
   assert(r == 0);
 
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+  r = pthread_mutex_init(&pages_lock, &attr);
 
   for (i = 0; i < MAX_COPY_THREADS; i++) {
     s = pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)i);
@@ -497,10 +502,11 @@ static void hemem_mmap_populate(void* addr, size_t length)
     uffdio_register.range.len = pagesize;
     uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
     uffdio_register.ioctls = 0;
+    // LOG("hemem_mmap_populate: registering page 0x%lx, size %zu with uffd\n", (uint64_t)newptr, pagesize);
     if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
       perror("ioctl uffdio_register");
       assert(0);
-    }
+    } // mmap_populate
 
     // use mmap return addr to track new page's virtual address
     page->va = (uint64_t)newptr;
@@ -573,7 +579,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   // printf("uffd: %ld, start: %lx, len: %zu pages: %zu mem_allocated: %zu\n", 
   //       uffd, (uint64_t)p, length, pages_allocated - pages_freed, mem_allocated);
 
-
+  // LOG("hemem_mmap: registering region 0x%lx, len %zu with uffd\n", (uint64_t)p, length);
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
     printf("in hemem_mmap: uffd: %ld, start: %lx, len: %zu\n", uffd, (uint64_t)p, length);
@@ -581,6 +587,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   }
 
   if (!cr3_set) {
+    LOG("hemem_mmap: getting cr3\n");
     if (ioctl(uffd, UFFDIO_CR3, &uffdio_cr3) < 0) {
       perror("ioctl uffdio_cr3");
       assert(0);
@@ -626,6 +633,7 @@ int hemem_munmap(void* addr, size_t length)
       struct uffdio_register uffdio_unregister;
       uffdio_unregister.range.start = page->va;
       uffdio_unregister.range.len = pt_to_pagesize(page->pt);
+      // LOG("hemem_mmunmap: unregistering page 0x%lx, size %zu from uffd\n", page->va, pt_to_pagesize(page->pt));
       if (ioctl(uffd, UFFDIO_UNREGISTER, &uffdio_unregister) == -1) {
         perror("ioctl uffdio_unregister");
         assert(0);
@@ -655,11 +663,11 @@ int hemem_munmap(void* addr, size_t length)
   }
 
 
-  ret = libc_munmap(addr, length);
+  // ret = libc_munmap(addr, length);
 
   internal_call--;
 
-  return ret;
+  return 0;
 }
 
 #ifndef USE_DMA
@@ -790,6 +798,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   uffdio_register.range.len = pagesize;
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
+  // LOG("hemem_migrate_up: registering page 0x%lx, size %zu with uffd\n", (uint64_t)newptr, pagesize);
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     // printf("hemem_migrate_up, ioctl fails for uffd: %ld, start: %lx, len: %zu\n", 
     //        uffd, (uint64_t)newptr, pagesize);
@@ -797,7 +806,9 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
     fprintf(stderr, "errno=%d (%s)\n", errno, strerror(errno));
     perror("ioctl uffdio_register");
     assert(0);
-  }
+  } // Getting error on ioctl. Probably trying to map on the same range twice?
+    // Other areas where ioctl is called are: hemem_munmap (unregisters regions), 
+    // 
   gettimeofday(&end, NULL);
   LOG_TIME(UFFDIO_REGISTER1, elapsed(&start, &end));
 
@@ -909,6 +920,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   uffdio_register.range.len = pagesize;
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
+  // LOG("hemem_migrate_down: registering page 0x%lx, size %zu with uffd\n", (uint64_t)newptr, pagesize);
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
     assert(0);
@@ -956,6 +968,7 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   wp.range.start = addr;
   wp.range.len = pagesize;
   wp.mode = (protect ? UFFDIO_WRITEPROTECT_MODE_WP : 0);
+  // LOG("hemem_wp_page: %s write protect on page 0x%lx, size %zu\n", (protect ? "enabling" : "disabling"), addr, pagesize);
   ret = ioctl(uffd, UFFDIO_WRITEPROTECT, &wp);
 
   if (ret < 0) {
@@ -1078,6 +1091,7 @@ void handle_missing_fault(uint64_t page_boundry)
   uffdio_register.range.len = pagesize;
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
+  // LOG("handle_missing_fault: registering page 0x%lx, size %zu with uffd\n", (uint64_t)newptr, pagesize);
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
     printf("in handle_missing_fault: addr: %p, length: %zu\n", newptr, pagesize);
@@ -1209,7 +1223,7 @@ void *handle_fault()
         // wake the faulting thread
         range.start = (uint64_t)page_boundry;
         range.len = PAGE_SIZE;
-
+        // LOG("uffdio_wake: waking page 0x%lx, size %zu\n", range.start, range.len);
         ret = ioctl(uffd, UFFDIO_WAKE, &range);
 
         if (ret < 0) {
@@ -1242,7 +1256,7 @@ void hemem_tlb_shootdown(uint64_t va)
   
   range.start = page_boundry;
   range.len = PAGE_SIZE;
-
+  // LOG("hemem_tlb_shootdown: shooting down TLB for page 0x%lx, size %zu\n", range.start, range.len);
   ret = ioctl(uffd, UFFDIO_TLBFLUSH, &range);
   if (ret < 0) {
     perror("uffdio tlbflush");
@@ -1261,7 +1275,7 @@ void hemem_clear_bits(struct hemem_page *page)
   assert(page_flags.va % PAGE_SIZE == 0);
   page_flags.flag1 = HEMEM_ACCESSED_FLAG;
   page_flags.flag2 = HEMEM_DIRTY_FLAG;
-
+  // LOG("hemem_clear_bits: clearing accessed and dirty bits for page 0x%lx\n", page->va);
   if (ioctl(uffd, UFFDIO_CLEAR_FLAG, &page_flags) < 0) {
     fprintf(stderr, "userfaultfd_clear_flag returned < 0\n");
     assert(0);
@@ -1284,7 +1298,7 @@ uint64_t hemem_get_bits(struct hemem_page *page)
   assert(page_flags.va % PAGE_SIZE == 0);
   page_flags.flag1 = HEMEM_ACCESSED_FLAG;
   page_flags.flag2 = HEMEM_DIRTY_FLAG;
-
+  // LOG("hemem_get_bits: getting accessed and dirty bits for page 0x%lx\n", page->va);
   if (ioctl(uffd, UFFDIO_GET_FLAG, &page_flags) < 0) {
     fprintf(stderr, "userfaultfd_get_flag returned < 0\n");
     assert(0);
