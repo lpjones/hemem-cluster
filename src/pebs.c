@@ -97,6 +97,12 @@ void add_or_update_record(uint64_t tsc, uint64_t va, uint64_t ip, uint32_t cpu, 
   page_records[hash].event = event;
 }
 
+void record_sample(FILE* fp, uint64_t tsc, uint64_t va, uint64_t ip, uint32_t cpu, uint8_t event)
+{
+  struct pebs_record rec = {.tsc = tsc, .va = va, .ip = ip, .cpu = cpu, .event = event };
+  write(fileno(fp), &rec, sizeof(struct pebs_record));
+}
+
 struct pebs_record *find_record(uint64_t va)
 {
   uint64_t hash = rec_hash(va);
@@ -135,6 +141,8 @@ uint64_t core_accesses_cnt[PEBS_NPROCS];
 _Atomic uint64_t zero_pages_cnt = 0;
 _Atomic uint64_t throttle_cnt = 0;
 _Atomic uint64_t unthrottle_cnt = 0;
+_Atomic uint64_t num_pebs_samples = 0;
+_Atomic uint64_t num_hem_samples = 0;
 uint64_t cools = 0;
 
 _Atomic volatile double miss_ratio = -1.0;
@@ -323,14 +331,16 @@ void *pebs_scan_thread()
               assert(pfn % PAGE_SIZE == 0);
               // printf("PEBS sample: 0x%llx\n", pfn);
               // print all HeMem pages
-              
-            
+              num_pebs_samples++;
+              // record_sample(pebs_trace_fp, rdtscp(), ps->addr, ps->ip, i, j);
               page = get_hemem_page(pfn);
               if (page != NULL) {
                 if (page->va != 0) {
+                  num_hem_samples++;
                   // printf("hemem sample: 0x%lx\n", page->va);
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
+                  record_sample(record_fp, rdtscp(), page->va, ps->ip, i, j);
                   // add_or_update_record(rdtscp(), page->va, ps->ip, i, j);
                   
                   // cluster_cluster()
@@ -1156,6 +1166,10 @@ void pebs_stats()
     core_accesses_cnt[i] = 0;
   }
   LOG_STATS("]\ttotal_samples: [%lu]\n", total_samples);
+  if (num_pebs_samples != 0) {
+    LOG_STATS("\them_sample_ratio: [%f]\n", (double)num_hem_samples / (double)num_pebs_samples);
+  }
+  // num_pebs_samples = num_hem_samples = 0;
 
   if (accesses_cnt[DRAMREAD] + accesses_cnt[NVMREAD] != 0) {
     if (miss_ratio == -1.0) {

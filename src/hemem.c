@@ -77,6 +77,7 @@ uint64_t cr3 = 0;
 FILE* hememlogf;
 FILE* statsf;
 FILE* timef;
+FILE* record_fp;
 
 #ifndef USE_DMA
 pthread_t copy_threads[MAX_COPY_THREADS];
@@ -310,6 +311,12 @@ void hemem_init()
   timef = fopen("times-hem.bin", "w+");
   if (timef == NULL) {
     perror("time file fopen\n");
+    assert(0);
+  }
+
+  record_fp = fopen("trace-hem.bin", "w+");
+  if (record_fp == NULL) {
+    perror("record file fopen\n");
     assert(0);
   }
 
@@ -1332,8 +1339,8 @@ void hemem_print_stats(FILE *fd)
 
 void hemem_clear_stats()
 {
-  // pages_allocated = 0;
-  // pages_freed = 0;
+  pages_allocated = 0;
+  pages_freed = 0;
   missing_faults_handled = 0;
   migrations_up = 0;
   migrations_down = 0;

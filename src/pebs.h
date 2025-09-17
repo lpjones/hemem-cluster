@@ -58,7 +58,6 @@ enum pbuftype {
 
 void *pebs_kswapd();
 struct hemem_page* pebs_pagefault(void);
-struct hemem_page* pebs_pagefault_unlocked(void);
 void pebs_init(void);
 void pebs_remove_page(struct hemem_page *page);
 void pebs_stats();

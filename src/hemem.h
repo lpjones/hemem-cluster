@@ -66,7 +66,8 @@ extern _Atomic int internal_call;
 
 #define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L * 1024L))
+// #define DRAMSIZE_DEFAULT  (1L * (1024L * 1024L * 1024L))
+#define DRAMSIZE_DEFAULT  (512L * 1024L * 1024L)
 
 #define NVMOFFSET_DEFAULT (0)
 #define DRAMOFFSET_DEFAULT (0)
@@ -107,6 +108,7 @@ extern FILE *hememlogf;
 //#define LOG(str, ...) while(0) {}
 
 extern FILE *timef;
+extern FILE *record_fp;
 extern _Atomic bool timing;
 
 struct __attribute__((__packed__)) mig_record {

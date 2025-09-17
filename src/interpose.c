@@ -24,6 +24,11 @@ void (*libc_free)(void* ptr) = NULL;
 
 static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, off_t offset, uint64_t *result)
 {
+  if (fd == dramfd || fd == nvmfd) {
+    // devdax mappings should go to libc
+    LOG("hemem interpose: calling libc mmap due to devdax mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+    return 1;
+  }
   // if (length == 2147487744) {
   //   LOG("hemem interpose: hooked main malloc: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
   // }
