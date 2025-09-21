@@ -47,11 +47,14 @@ uint64_t num_cores = 0;
 uint64_t fault_thread_cpu = 0;
 uint64_t stats_thread_cpu = 0;
 
+pthread_mutex_t internal_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+pid_t internal_threads[MAX_INTERNAL_THREADS];
+uint32_t num_internal_threads = 0;
+
 int dramfd = -1;
 int nvmfd = -1;
 long uffd = -1;
 
-_Atomic bool is_init = false;
 _Atomic bool timing = false;
 _Atomic int internal_call = 0;
 
@@ -78,6 +81,7 @@ FILE* hememlogf;
 FILE* statsf;
 FILE* timef;
 FILE* record_fp;
+FILE* pebs_fp;
 
 #ifndef USE_DMA
 pthread_t copy_threads[MAX_COPY_THREADS];
@@ -85,6 +89,7 @@ pthread_t copy_threads[MAX_COPY_THREADS];
 pthread_t stats_thread;
 
 struct hemem_page *pages = NULL;
+
 // pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t pages_lock;
 pthread_mutex_t change_page_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -92,6 +97,18 @@ pthread_mutex_t change_page_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
+
+void add_internal_thread() 
+{
+  if (num_internal_threads >= MAX_INTERNAL_THREADS) {
+    fprintf(stderr, "Exceeded max internal threads\n");
+    assert(0);
+  }
+  pid_t tid = gettid();
+  pthread_mutex_lock(&internal_thread_lock);
+  internal_threads[num_internal_threads++] = tid;
+  pthread_mutex_unlock(&internal_thread_lock);
+}
 
 #ifndef USE_DMA
 struct pmemcpy {
@@ -107,17 +124,21 @@ static struct pmemcpy pmemcpy;
 
 void *hemem_parallel_memcpy_thread(void *arg)
 {
+  // Assume pmemcpy.lock is already held by caller
+  // tid 1 will unlock when memcpy is done
   uint64_t tid = (uint64_t)arg;
   void *src;
   void *dst;
   size_t length;
   size_t chunk_size;
 
+  add_internal_thread();
+
   assert(tid < MAX_COPY_THREADS);
   
 
-  for (;;) {
-    /* while(!pmemcpy.activate || pmemcpy.done_bitmap[tid]) { } */
+  while (true) {
+    // Blocks all threads until pthread_barrier_wait is called from somewhere else to start the copy
     int r = pthread_barrier_wait(&pmemcpy.barrier);
     assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
     if (tid == 0) {
@@ -135,26 +156,10 @@ void *hemem_parallel_memcpy_thread(void *arg)
     else {
       memset(dst, 0, chunk_size);
     }
-
-#ifdef HEMEM_DEBUG
-    uint64_t *tmp1, *tmp2, i;
-    tmp1 = dst;
-    tmp2 = src;
-    for (i = 0; i < chunk_size / sizeof(uint64_t); i++) {
-      if (tmp1[i] != tmp2[i]) {
-        LOG("copy thread: dst[%lu] = %lu != src[%lu] = %lu\n", i, tmp1[i], i, tmp2[i]);
-        assert(tmp1[i] == tmp2[i]);
-      }
-    }
-#endif
-
-    //LOG("thread %lu done copying\n", tid);
-
     r = pthread_barrier_wait(&pmemcpy.barrier);
     assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-    /* pmemcpy.done_bitmap[tid] = true; */
   }
-  return NULL;
+  
 }
 #endif
 
@@ -163,6 +168,8 @@ static void *hemem_stats_thread()
   cpu_set_t cpuset;
   pthread_t thread;
 
+  add_internal_thread();
+
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(STATS_THREAD_CPU_DEFAULT, &cpuset);
@@ -170,9 +177,6 @@ static void *hemem_stats_thread()
   if (s != 0) {
     perror("pthread_setaffinity_np");
     assert(0);
-  }
-  while (!miss_ratio_f_opened) {
-    sleep(1);
   }
 
   for (;;) {
@@ -219,191 +223,136 @@ struct hemem_page* find_page(uint64_t va)
 }
 
 
-void hemem_init()
+void open_log_files()
 {
-  if (is_init) return;
-  struct uffdio_api uffdio_api;
-#ifdef USE_DMA
-  struct uffdio_dma_channs uffdio_dma_channs;
-#endif
-  char logpath[32];
-
-  internal_call++;
-  main_thread = getpid();
-
-/*
-  {
-    // This call is dangerous. Ideally, all printf's should be
-    // replaced with logging macros that can print to stderr instead
-    // (which is unbuffered).
-    int r = setvbuf(stdout, NULL, _IONBF, 0);
-    assert(r == 0);
-  }
-*/
-  char* hemem_start_cpu_string = getenv("HEMEM_MGR_START_CPU");
-  if(hemem_start_cpu_string != NULL)
-    hemem_start_cpu = strtoull(hemem_start_cpu_string, NULL, 10);
-  else
-    hemem_start_cpu = START_THREAD_DEFAULT;
-
-  stats_thread_cpu = hemem_start_cpu;
-  fault_thread_cpu = hemem_start_cpu;
-
-  char* num_cores_string = getenv("HEMEM_NUM_CORES");
-  if(num_cores_string != NULL)
-    num_cores = strtoull(num_cores_string, NULL, 10);
-  else
-    num_cores = PEBS_NPROCS;
-
-  snprintf(&logpath[0], sizeof(logpath) - 1, "debuglog-hem.txt");
-  hememlogf = fopen(logpath, "w+");
-  if (hememlogf == NULL) {
-    perror("log file open\n");
-    assert(0);
-  }
-
-  LOG("hemem_init: started\n");
-
-  drampath = getenv("DRAMPATH");
-  if(drampath == NULL) {
-    drampath = malloc(sizeof(DRAMPATH_DEFAULT));
-    strcpy(drampath, DRAMPATH_DEFAULT);
-  }
-
-  dramfd = open(drampath, O_RDWR);
-  if (dramfd < 0) {
-    perror("dram open");
-  }
-  assert(dramfd >= 0);
-
-  nvmpath = getenv("NVMPATH");
-  if(nvmpath == NULL) {
-    nvmpath = malloc(sizeof(NVMPATH_DEFAULT));
-    strcpy(nvmpath, NVMPATH_DEFAULT);
-  }
-
-  nvmfd = open(nvmpath, O_RDWR);
-  if (nvmfd < 0) {
-    perror("nvm open");
-  }
-  assert(nvmfd >= 0);
-
-  uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
-  if (uffd == -1) {
-    perror("uffd");
-    assert(0);
-  }
-
-  uffdio_api.api = UFFD_API;
-  uffdio_api.features = UFFD_FEATURE_PAGEFAULT_FLAG_WP |  UFFD_FEATURE_MISSING_SHMEM | UFFD_FEATURE_MISSING_HUGETLBFS;// | UFFD_FEATURE_EVENT_UNMAP | UFFD_FEATURE_EVENT_REMOVE;
-  uffdio_api.ioctls = 0;
-  if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
-    perror("ioctl uffdio_api");
-    assert(0);
-  }
-
-  int s = pthread_create(&fault_thread, NULL, handle_fault, 0);
-  if (s != 0) {
-    perror("pthread_create");
-    assert(0);
-  }
+  hememlogf = fopen("debuglog-hem.txt", "w+");
+  if (hememlogf == NULL) { perror("log file open\n"); assert(0); }
 
   timef = fopen("times-hem.bin", "w+");
-  if (timef == NULL) {
-    perror("time file fopen\n");
-    assert(0);
-  }
+  if (timef == NULL) { perror("time file fopen\n"); assert(0); }
 
   record_fp = fopen("trace-hem.bin", "w+");
-  if (record_fp == NULL) {
-    perror("record file fopen\n");
-    assert(0);
-  }
+  if (record_fp == NULL) { perror("record file fopen\n"); assert(0); }
 
-  char stats_name_buf[25]; 
-  int snret = snprintf(stats_name_buf, 25, "stats-hem.txt");
-  assert(snret > 0);
-  statsf = fopen(stats_name_buf, "w+");
-  if (statsf == NULL) {
-    perror("stats file fopen\n");
-    assert(0);
-  }
+  pebs_fp = fopen("pebs-hem.bin", "w+");
+  if (pebs_fp == NULL) { perror("pebs file fopen\n"); assert(0); }
 
-  char* dramoffset_string = getenv("DRAMOFFSET");
-  if(dramoffset_string != NULL)
-    dramoffset = strtoull(dramoffset_string, NULL, 10);
-  else
-    dramoffset = DRAMOFFSET_DEFAULT;
+  statsf = fopen("stats-hem.txt", "w+");
+  if (statsf == NULL) { perror("stats file fopen\n"); assert(0); }
+}
 
-  char* dramsize_string = getenv("DRAMSIZE");
-  if(dramsize_string != NULL)
-    dramsize = strtoull(dramsize_string, NULL, 10);
-  else
-    dramsize = DRAMSIZE_DEFAULT;
-  LOG("mapping DRAM\n");
-  if(dramsize != 0) {
-    dram_devdax_mmap =libc_mmap(NULL, dramsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, dramfd, dramoffset);
-    if (dram_devdax_mmap == MAP_FAILED) {
-      perror("dram devdax mmap");
-      assert(0);
-    }
-  }
-  LOG("Finished mapping DRAM\n");
+void open_dax_files()
+{
+  drampath = malloc(sizeof(DRAMPATH_DEFAULT));
+  strcpy(drampath, DRAMPATH_DEFAULT);
 
-  char* nvmoffset_string = getenv("NVMOFFSET");
-  if(nvmoffset_string != NULL)
-    nvmoffset = strtoull(nvmoffset_string, NULL, 10);
-  else
-    nvmoffset = NVMOFFSET_DEFAULT;
+  dramfd = open(drampath, O_RDWR);
+  if (dramfd < 0) { perror("dram open"); } assert(dramfd >= 0);
 
-  char* nvmsize_string = getenv("NVMSIZE");
-  if(nvmsize_string != NULL)
-    nvmsize = strtoull(nvmsize_string, NULL, 10);
-  else
-    nvmsize = NVMSIZE_DEFAULT;
-  LOG("mapping NVM\n");
-  nvm_devdax_mmap =libc_mmap(NULL, nvmsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, nvmfd, nvmoffset);
-  if (nvm_devdax_mmap == MAP_FAILED) {
-    perror("nvm devdax mmap");
-    assert(0);
-  }
-  LOG("Finished mapping NVM\n");
+  nvmpath = malloc(sizeof(NVMPATH_DEFAULT));
+  strcpy(nvmpath, NVMPATH_DEFAULT);
 
-#ifndef USE_DMA 
-  uint64_t i;
+  nvmfd = open(nvmpath, O_RDWR);
+  if (nvmfd < 0) { perror("nvm open"); } assert(nvmfd >= 0);
+
+  dramoffset = DRAMOFFSET_DEFAULT;
+  dramsize = DRAMSIZE_DEFAULT;
+
+  LOG("Mapping DRAM\n");
+  assert(dramsize >= 0);
+
+  dram_devdax_mmap = libc_mmap(NULL, dramsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, dramfd, dramoffset);
+  if (dram_devdax_mmap == MAP_FAILED) { perror("dram devdax mmap"); assert(0); }
+
+  nvmoffset = NVMOFFSET_DEFAULT;
+  nvmsize = NVMSIZE_DEFAULT;
+
+  LOG("Mapping NVM\n");
+  assert(nvmsize >= 0);
+  nvm_devdax_mmap = libc_mmap(NULL, nvmsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, nvmfd, nvmoffset);
+  if (nvm_devdax_mmap == MAP_FAILED) { perror("nvm devdax mmap"); assert(0); }
+}
+
+void create_copy_threads()
+{
+  // To call a memcpy use pthread_barrier_wait
   int r = pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1);
   assert(r == 0);
 
   r = pthread_mutex_init(&pmemcpy.lock, NULL);
   assert(r == 0);
 
+  for (uint64_t i = 0; i < MAX_COPY_THREADS; i++) {
+    r = pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)i);
+    assert(r == 0);
+  }
+}
+
+void start_fault_handler()
+{
+  struct uffdio_api uffdio_api;
+  // Create userfaultfd to handle page faults
+  uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+  if (uffd == -1) { perror("uffd"); assert(0); }
+
+  uffdio_api.api = UFFD_API;
+  uffdio_api.features = UFFD_FEATURE_PAGEFAULT_FLAG_WP |  UFFD_FEATURE_MISSING_SHMEM | UFFD_FEATURE_MISSING_HUGETLBFS;// | UFFD_FEATURE_EVENT_UNMAP | UFFD_FEATURE_EVENT_REMOVE;
+  uffdio_api.ioctls = 0;
+  if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) { perror("ioctl uffdio_api"); assert(0); }
+
+  // Start fault handler thread
+  int r = pthread_create(&fault_thread, NULL, handle_fault, 0);
+  if (r != 0) { perror("pthread_create"); assert(0); }
+}
+
+void hemem_init()
+{
+  
+#ifdef USE_DMA
+  struct uffdio_dma_channs uffdio_dma_channs;
+#endif
+
+  // Internal call makes hooks call regular mmap
+  internal_call++;
+  __sync_synchronize();
+  main_thread = getpid();
+
+  hemem_start_cpu = START_THREAD_DEFAULT;
+  stats_thread_cpu = hemem_start_cpu;
+  fault_thread_cpu = hemem_start_cpu;
+  num_cores = PEBS_NPROCS;
+
+  open_log_files();
+
+  LOG("hemem_init: started\n");
+
+  open_dax_files();
+
+#ifndef USE_DMA
+  create_copy_threads();
+#endif
+
+  // Create pages lock so other threads can't access (problems here with recursive hooks being allowed)
   pthread_mutexattr_t attr;
   pthread_mutexattr_init(&attr);
   pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-  r = pthread_mutex_init(&pages_lock, &attr);
+  int r = pthread_mutex_init(&pages_lock, &attr);
+  assert(r == 0);
 
-  for (i = 0; i < MAX_COPY_THREADS; i++) {
-    s = pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)i);
-    assert(s == 0);
-  }
-#endif
+  start_fault_handler();
 
-#ifdef STATS_THREAD
-  s = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
-  assert(s == 0);
-#endif
-  LOG("Doing paging_init()\n");
-  paging_init();
-  LOG("Finished paging_init()\n");
-
+  paging_init();  // pebs_init();
   
-  LOG("hemem: initialization complete\n");
+#ifdef STATS_THREAD
+  __sync_synchronize();
+  r = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
+  assert(r == 0);
+#endif
 
   struct hemem_page *dummy_page = calloc(1, sizeof(struct hemem_page));
   add_page(dummy_page);
 
-  __sync_synchronize();
-  is_init = true;
+  
 
 #ifdef USE_DMA
   uffdio_dma_channs.num_channs = NUM_CHANNS;
@@ -414,8 +363,10 @@ void hemem_init()
   }
 #endif
 
+  
   LOG("hemem_init: finished\n");
 
+  __sync_synchronize();
   internal_call--;
 }
 
@@ -444,13 +395,16 @@ static void hemem_parallel_memset(void* addr, int c, size_t n)
   pmemcpy.length = n;
   pmemcpy.write_zeros = true;
 
+  // starts memcpy in hemem_parallel_memcpy_thread
   int r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r ==0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
 
+  // wait for all threads to finish before unlocking
   r = pthread_barrier_wait(&pmemcpy.barrier);
   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  
+
   pthread_mutex_unlock(&(pmemcpy.lock));
+  
 }
 #endif
 
@@ -469,14 +423,14 @@ static void hemem_mmap_populate(void* addr, size_t length)
   assert(addr != 0);
   assert(length != 0);
   // printf("addr: %p, length: %zu\n", addr, length);
-
+  // printf("getting: %lu\n", length);
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     page = pagefault();
     assert(page != NULL);
     // let policy algorithm do most of the heavy lifting of finding a free page
     offset = page->devdax_offset;
     in_dram = page->in_dram;
-    pagesize = pt_to_pagesize(page->pt);
+    pagesize = PAGE_SIZE;
     // printf("page size: %zu\n", pagesize);
 
     tmpaddr = (in_dram ? dram_devdax_mmap + (offset - dramoffset): nvm_devdax_mmap + (offset - nvmoffset));
@@ -548,8 +502,8 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   void *p;
   struct uffdio_cr3 uffdio_cr3;
 
-  internal_call++;
-  assert(is_init);
+  // internal_call++;
+  // __sync_synchronize();
   assert(length != 0);
   
   if ((flags & MAP_PRIVATE) == MAP_PRIVATE) {
@@ -610,7 +564,8 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
 
   mem_mmaped = length;
   
-  internal_call--;
+  // __sync_synchronize();
+  // internal_call--;
   
   return p;
 }
@@ -620,10 +575,9 @@ int hemem_munmap(void* addr, size_t length)
 {
   uint64_t page_boundry;
   struct hemem_page *page;
-  int ret;
 
   internal_call++;
-
+  __sync_synchronize();
 
   //fprintf(stderr, "munmap(%p, %lu)\n", addr, length);
 
@@ -639,8 +593,7 @@ int hemem_munmap(void* addr, size_t length)
       // unregister with userfaultfd
       struct uffdio_register uffdio_unregister;
       uffdio_unregister.range.start = page->va;
-      uffdio_unregister.range.len = pt_to_pagesize(page->pt);
-      // LOG("hemem_mmunmap: unregistering page 0x%lx, size %zu from uffd\n", page->va, pt_to_pagesize(page->pt));
+      uffdio_unregister.range.len = PAGE_SIZE;
       if (ioctl(uffd, UFFDIO_UNREGISTER, &uffdio_unregister) == -1) {
         perror("ioctl uffdio_unregister");
         assert(0);
@@ -651,12 +604,12 @@ int hemem_munmap(void* addr, size_t length)
 
       
 
-      mem_allocated -= pt_to_pagesize(page->pt);
-      mem_mmaped -= pt_to_pagesize(page->pt);
+      mem_allocated -= PAGE_SIZE;
+      mem_mmaped -= PAGE_SIZE;
       pages_freed++;
 
       // move to next page
-      page_boundry += pt_to_pagesize(page->pt);
+      page_boundry += PAGE_SIZE;
       pthread_mutex_unlock(&page->page_lock);
     }
     else {
@@ -671,7 +624,7 @@ int hemem_munmap(void* addr, size_t length)
 
 
   // ret = libc_munmap(addr, length);
-
+  __sync_synchronize();
   internal_call--;
 
   return 0;
@@ -680,41 +633,22 @@ int hemem_munmap(void* addr, size_t length)
 #ifndef USE_DMA
 static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
 {
-  /* uint64_t i; */
-  /* bool all_threads_done; */
   pthread_mutex_lock(&(pmemcpy.lock));
   pmemcpy.dst = dst;
   pmemcpy.src = src;
   pmemcpy.length = length;
   pmemcpy.write_zeros = false;
 
+  // starts memcpy in hemem_parallel_memcpy_thread
   int r = pthread_barrier_wait(&pmemcpy.barrier);
   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  
-  //LOG("parallel migration started\n");
-  
-  /* pmemcpy.activate = true; */
 
-  /* while (!all_threads_done) { */
-  /*   all_threads_done = true; */
-  /*   for (i = 0; i < MAX_COPY_THREADS; i++) { */
-  /*     if (!pmemcpy.done_bitmap[i]) { */
-  /*       all_threads_done = false; */
-  /*       break; */
-  /*     } */
-  /*   } */
-  /* } */
-
+  // wait for all threads to finish before unlocking
   r = pthread_barrier_wait(&pmemcpy.barrier);
   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  //LOG("parallel migration finished\n");
+
   pthread_mutex_unlock(&(pmemcpy.lock));
 
-  /* pmemcpy.activate = false; */
-
-  /* for (i = 0; i < MAX_COPY_THREADS; i++) { */
-  /*   pmemcpy.done_bitmap[i] = false; */
-  /* } */
 }
 #endif
 
@@ -731,15 +665,13 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   struct uffdio_dma_copy uffdio_dma_copy;
 #endif
 
-  internal_call++;
-
   assert(!page->in_dram);
   
   gettimeofday(&migrate_start, NULL);
   
   assert(page != NULL);
 
-  pagesize = pt_to_pagesize(page->pt);
+  pagesize = PAGE_SIZE;
 
   old_addr_offset = page->devdax_offset;
   new_addr_offset = dram_offset;
@@ -836,8 +768,6 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
 
   gettimeofday(&migrate_end, NULL);  
   LOG_TIME(HEMEM_MIGRATE_UP, elapsed(&migrate_start, &migrate_end));
-
-  internal_call--;
 }
 
 
@@ -854,15 +784,13 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   struct uffdio_dma_copy uffdio_dma_copy;
 #endif
 
-  internal_call++;
-
   assert(page->in_dram);
 
   //LOG("hemem_migrate_down: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
 
   gettimeofday(&migrate_start, NULL);
 
-  pagesize = pt_to_pagesize(page->pt);
+  pagesize = PAGE_SIZE;
   
   assert(page != NULL);
   old_addr_offset = page->devdax_offset;
@@ -952,8 +880,6 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
 
   gettimeofday(&migrate_end, NULL);  
   LOG_TIME(HEMEM_MIGRATE_DOWN, elapsed(&migrate_start, &migrate_end));
-
-  internal_call--;
 }
 
 void hemem_wp_page(struct hemem_page *page, bool protect)
@@ -962,9 +888,7 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   struct uffdio_writeprotect wp;
   int ret;
   struct timeval start, end;
-  uint64_t pagesize = pt_to_pagesize(page->pt);
-
-  internal_call++;
+  uint64_t pagesize = PAGE_SIZE;
 
   //LOG("hemem_wp_page: wp addr %lx pte: %lx\n", addr, hemem_va_to_pa(addr));
 
@@ -987,16 +911,12 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   gettimeofday(&end, NULL);
 
   LOG_TIME(UFFDIO_WRITEPROTECT1, elapsed(&start, &end));
-
-  internal_call--;
 }
 
 
 void handle_wp_fault(uint64_t page_boundry)
 {
   struct hemem_page *page;
-
-  internal_call++;
 
   page = find_page(page_boundry);
   assert(page != NULL);
@@ -1006,7 +926,6 @@ void handle_wp_fault(uint64_t page_boundry)
   LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n", page_boundry);
 
   while (page->migrating);
-  internal_call--;
 }
 
 
@@ -1022,8 +941,6 @@ void handle_missing_fault(uint64_t page_boundry)
   void* tmp_offset;
   bool in_dram;
   uint64_t pagesize;
-
-  internal_call++;
 
   assert(page_boundry != 0);
 
@@ -1049,7 +966,7 @@ void handle_missing_fault(uint64_t page_boundry)
   
   offset = page->devdax_offset;
   in_dram = page->in_dram;
-  pagesize = pt_to_pagesize(page->pt);
+  pagesize = PAGE_SIZE;
   // printf("Page Size: %lu\n", pagesize);
 
   tmp_offset = (in_dram) ? dram_devdax_mmap + (offset - dramoffset) : nvm_devdax_mmap + (offset - nvmoffset);
@@ -1128,7 +1045,6 @@ void handle_missing_fault(uint64_t page_boundry)
   missing_faults_handled++;
   gettimeofday(&missing_end, NULL);
   LOG_TIME(HEMEM_MISSING_FAULT, elapsed(&missing_start, &missing_end));
-  internal_call--;
   pthread_mutex_unlock(&page->page_lock);
 }
 
@@ -1148,6 +1064,8 @@ void *handle_fault()
 
   cpu_set_t cpuset;
   pthread_t thread;
+
+  add_internal_thread();
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -1216,8 +1134,8 @@ void *handle_fault()
         fault_addr = (uint64_t)msg[i].arg.pagefault.address;
         fault_flags = msg[i].arg.pagefault.flags;
 
-        // allign faulting address to page boundry
-        // huge page boundry in this case due to dax allignment
+        // align faulting address to page boundry
+        // huge page boundry in this case due to dax alignment
         page_boundry = fault_addr & ~(PAGE_SIZE - 1);
 
         if (fault_flags & UFFD_PAGEFAULT_FLAG_WP) {

@@ -133,6 +133,9 @@ static ring_handle_t free_page_ring;
 static pthread_mutex_t free_page_ring_lock = PTHREAD_MUTEX_INITIALIZER;
 uint64_t global_clock = 0;
 
+pthread_t kswapd_thread;
+pthread_t scan_thread;
+
 uint64_t hemem_pages_cnt = 0;
 uint64_t other_pages_cnt = 0;
 _Atomic uint64_t total_pages_cnt = 0;
@@ -147,7 +150,6 @@ uint64_t cools = 0;
 
 _Atomic volatile double miss_ratio = -1.0;
 FILE *miss_ratio_f = NULL;
-bool _Atomic miss_ratio_f_opened = false;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -296,6 +298,8 @@ void *pebs_scan_thread()
   cpu_set_t cpuset;
   pthread_t thread;
 
+  add_internal_thread();
+
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   scanning_thread_cpu = 0;
@@ -332,6 +336,7 @@ void *pebs_scan_thread()
               // printf("PEBS sample: 0x%llx\n", pfn);
               // print all HeMem pages
               num_pebs_samples++;
+              record_sample(pebs_fp, rdtscp(), ps->addr, ps->ip, i, j);
               // record_sample(pebs_trace_fp, rdtscp(), ps->addr, ps->ip, i, j);
               page = get_hemem_page(pfn);
               if (page != NULL) {
@@ -698,6 +703,8 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
 
+  add_internal_thread();
+
   migration_thread_cpu = 2;
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -850,7 +857,7 @@ void *pebs_policy_thread()
           enqueue_fifo(&dram_hot_list, p);
           enqueue_fifo(&nvm_free_list, np);
 
-          migrated_bytes += pt_to_pagesize(p->pt);
+          migrated_bytes += PAGE_SIZE;
           pthread_mutex_unlock(&np->page_lock);
           pthread_mutex_unlock(&p->page_lock);
           break;
@@ -930,6 +937,10 @@ out:
 
 static struct hemem_page* pebs_allocate_page()
 {
+
+  // printf("dram pages left: %lu\n", dram_free_list.numentries);
+  // printf("nvm pages left: %lu\n", nvm_free_list.numentries);
+  // printf("free ring buffer: %lu\n", ring_buf_size(free_page_ring));
   struct timeval start, end;
   struct hemem_page *page;
 
@@ -1017,31 +1028,17 @@ void pebs_remove_page(struct hemem_page *page)
 
 void pebs_init(void)
 {
-  pthread_t kswapd_thread;
-  pthread_t scan_thread;
+  
   uint64_t** buffer;
-  char logpath[32];
 
   memset(page_records, 0, MAX_PAGES * sizeof(struct pebs_record));
 
-  internal_call++;
-
   LOG("pebs_init: started\n");
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "log-hem.txt");
-  miss_ratio_f = fopen(logpath, "w");
-  if (miss_ratio_f == NULL) {
-    perror("miss ratio file fopen");
-  }
-  assert(miss_ratio_f != NULL);
-  miss_ratio_f_opened = true;
+  miss_ratio_f = fopen("log-hem.txt", "w");
+  if (miss_ratio_f == NULL) { perror("miss ratio file fopen"); assert(0); }
 
-  char* pebs_start_cpu_string = getenv("PEBS_START_CPU");
-  if(pebs_start_cpu_string != NULL)
-    pebs_start_cpu = strtoull(pebs_start_cpu_string, NULL, 10);
-  else
-    pebs_start_cpu = START_THREAD_DEFAULT;
-  
+  pebs_start_cpu = START_THREAD_DEFAULT;
   scanning_thread_cpu = hemem_start_cpu;
   migration_thread_cpu = scanning_thread_cpu + 1 * 2;
 
@@ -1074,13 +1071,11 @@ void pebs_init(void)
   pthread_mutex_init(&(dram_free_list.list_lock), NULL);
   
   for (size_t i = 0; i < dram_pages; i++) {
-    struct hemem_page *p = &dram_meta[i];                // <— no malloc/calloc
-    // (mmap anon is zeroed; no memset needed)
+    struct hemem_page *p = &dram_meta[i];
     p->devdax_offset = i * PAGE_SIZE + dramoffset;
     p->present       = false;
     p->in_dram       = true;
     p->ring_present  = false;
-    p->pt            = pagesize_to_pt(PAGE_SIZE);
     pthread_mutex_init(&(p->page_lock), NULL);
     enqueue_fifo(&dram_free_list, p);
   }
@@ -1088,17 +1083,15 @@ void pebs_init(void)
   pthread_mutex_init(&(nvm_free_list.list_lock), NULL);
   
   for (size_t i = 0; i < nvm_pages; i++) {
-    struct hemem_page *p = &nvm_meta[i];                 // <— no malloc/memset(1)
+    struct hemem_page *p = &nvm_meta[i];
     p->devdax_offset = i * PAGE_SIZE + nvmoffset;
     p->present       = false;
     p->in_dram       = false;
     p->ring_present  = false;
-    p->pt            = pagesize_to_pt(PAGE_SIZE);
     pthread_mutex_init(&(p->page_lock), NULL);
     enqueue_fifo(&nvm_free_list, p);
   }
 
-  // Ring buffers: already using libc_mmap (good)
   LOG("Creating ring buffers: 3 x (%lu)\n", sizeof(uint64_t*) * CAPACITY);
   buffer = libc_mmap(NULL, sizeof(uint64_t*) * CAPACITY,
                      PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -1124,8 +1117,6 @@ void pebs_init(void)
   LOG("Memory management policy is PEBS\n");
 
   LOG("pebs_init: finished\n");
-  internal_call--;
-
 }
 
 void pebs_shutdown()

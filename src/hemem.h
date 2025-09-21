@@ -60,14 +60,18 @@ extern pid_t main_thread;
 extern pthread_mutex_t pages_lock;
 extern pthread_mutex_t change_page_lock;
 
+#define MAX_INTERNAL_THREADS 128
+extern pthread_mutex_t internal_thread_lock;
+extern pid_t internal_threads[MAX_INTERNAL_THREADS];
+extern uint32_t num_internal_threads;
+
 extern FILE* miss_ratio_f;
-extern _Atomic bool miss_ratio_f_opened;
 extern _Atomic int internal_call;
 
 #define NVMSIZE_DEFAULT   (19L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (2L * (1024L * 1024L))
-// #define DRAMSIZE_DEFAULT  (1L * (1024L * 1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (512L * 1024L * 1024L)
+#define DRAMSIZE_DEFAULT  (1L * (1024L * 1024L * 1024L))
+// #define DRAMSIZE_DEFAULT  (512L * 1024L * 1024L)
 
 #define NVMOFFSET_DEFAULT (0)
 #define DRAMOFFSET_DEFAULT (0)
@@ -109,6 +113,7 @@ extern FILE *hememlogf;
 
 extern FILE *timef;
 extern FILE *record_fp;
+extern FILE *pebs_fp;
 extern _Atomic bool timing;
 
 struct __attribute__((__packed__)) mig_record {
@@ -185,23 +190,17 @@ extern FILE *statsf;
 extern uint64_t cr3;
 extern int dramfd;
 extern int nvmfd;
-extern _Atomic bool is_init;
 extern _Atomic uint64_t missing_faults_handled;
 extern _Atomic uint64_t migrations_up;
 extern _Atomic uint64_t migrations_down;
 extern __thread bool internal_malloc;
 extern __thread bool internal_munmap;
+extern pthread_t copy_threads[MAX_COPY_THREADS];
 
 enum memtypes {
   FASTMEM = 0,
   SLOWMEM = 1,
   NMEMTYPES,
-};
-
-enum pagetypes {
-  HUGEP = 0,
-  BASEP = 1,
-  NPAGETYPES
 };
 
 struct hemem_page {
@@ -214,7 +213,6 @@ struct hemem_page {
   uint64_t local_clock;
 
   pthread_mutex_t page_lock;
-  enum pagetypes pt;
   UT_hash_handle hh;
   struct hemem_page *next, *prev;
   struct fifo_list *list;
@@ -228,38 +226,7 @@ struct hemem_page {
   bool hot;
 };
 
-// static inline uint64_t pt_to_pagesize(enum pagetypes pt)
-// {
-//   switch(pt) {
-//   case HUGEP: return HUGEPAGE_SIZE;
-//   case BASEP: return BASEPAGE_SIZE;
-//   default: assert(!"Unknown page type");
-//   }
-// }
-
-static inline uint64_t pt_to_pagesize(enum pagetypes pt)
-{
-  return PAGE_SIZE;
-}
-
-// static inline enum pagetypes pagesize_to_pt(uint64_t pagesize)
-// {
-//   switch (pagesize) {
-//     case BASEPAGE_SIZE: return BASEP;
-//     case HUGEPAGE_SIZE: return HUGEP;
-//     default: assert(!"Unknown page ssize");
-//   }
-// }
-
-static inline enum pagetypes pagesize_to_pt(uint64_t pagesize)
-{
-  switch (pagesize) {
-    case PAGE_SIZE: return BASEP;
-    default: assert(!"Unknown page ssize");
-  }
-  return BASEP;
-}
-
+void add_internal_thread();
 void hemem_init();
 void hemem_stop();
 void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);

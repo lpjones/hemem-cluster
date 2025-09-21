@@ -18,8 +18,6 @@
 
 void* (*libc_mmap)(void *addr, size_t length, int prot, int flags, int fd, off_t offset) = NULL;
 int (*libc_munmap)(void *addr, size_t length) = NULL;
-void* (*libc_malloc)(size_t size) = NULL;
-void (*libc_free)(void* ptr) = NULL;
 
 
 static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, off_t offset, uint64_t *result)
@@ -33,10 +31,6 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   //   LOG("hemem interpose: hooked main malloc: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
   // }
   //ensure_init();
-  if (!is_init) {
-    LOG("hemem interpose: calling libc mmap due to hemem init in progress: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
-    return 1;
-  }
 
   assert(internal_call >= 0);
   if (internal_call) {
@@ -50,6 +44,17 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
     LOG("hemem interpose: calling libc mmap due to non-main thread memory call: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
     return 1;
   }
+
+  pid_t tid = gettid();
+  // pthread_mutex_lock(&internal_thread_lock);
+  for (uint32_t i = 0; i < num_internal_threads; i++) {
+    if (tid == internal_threads[i]) {
+      LOG("hemem interpose: calling libc munmap due to internal thread call: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
+      // pthread_mutex_unlock(&internal_thread_lock);
+      return 1;
+    }
+  }
+  // pthread_mutex_unlock(&internal_thread_lock);
 
   //TODO: figure out which mmap calls should go to libc vs hemem
   // non-anonymous mappings should probably go to libc (e.g., file mappings)
@@ -133,9 +138,31 @@ static int munmap_filter(void *addr, size_t length, uint64_t* result)
   //   LOG("hemem interpose: calling libc munmap due to non-hemem page: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
   //   return 1;
   // }
+  if (getpid() != main_thread) {
+    // only the main process should make allocations
+    LOG("hemem interpose: calling libc munmap due to non-main process memory call: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
+    return 1;
+  }
+  pid_t tid = gettid();
+  // pthread_mutex_lock(&internal_thread_lock);
+  for (uint32_t i = 0; i < num_internal_threads; i++) {
+    if (tid == internal_threads[i]) {
+      LOG("hemem interpose: calling libc munmap due to internal thread call: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
+      // pthread_mutex_unlock(&internal_thread_lock);
+      return 1;
+    }
+  }
+  // pthread_mutex_unlock(&internal_thread_lock);
+
+  // if (internal_call) {
+  //   // printf("internal_call: %d\n", internal_call);
+  //   LOG("hemem interpose: calling libc munmap due to internal memory call: munmap(0x%lx, %ld)\n", (uint64_t)addr, length);
+  //   return 1;
+  // }
   
   // Try to do hemem_munmap across the entire range. If it doesn't find a page at the address it skips it.
   // Then return 1 to call libc_munmap anyway to free the page since it already did that before
+  LOG("hemem interpose: calling hemem munmap(0x%lx, %ld)\n", (uint64_t)addr, length)
   if ((*result = hemem_munmap(addr, length)) == -1) {
     LOG("hemem munmap failed\n\tmunmap(0x%lx, %ld)\n", (uint64_t)addr, length);
   }
@@ -153,6 +180,7 @@ static void* bind_symbol(const char *sym)
   return ptr;
 }
 
+// hooks mmap and munmap syscalls
 static int hook(long syscall_number, long arg0, long arg1, long arg2, long arg3,	long arg4, long arg5,	long *result)
 {
 	if (syscall_number == SYS_mmap) {
@@ -169,11 +197,9 @@ static __attribute__((constructor)) void init(void)
 {
   libc_mmap = bind_symbol("mmap");
   libc_munmap = bind_symbol("munmap");
-  libc_malloc = bind_symbol("malloc");
-  libc_free = bind_symbol("free");
   intercept_hook_point = hook;
 
-#ifdef LLAMA
+  // set threshold to 0 so all allocations go to mmap and get hooked
   int ret = mallopt(M_MMAP_THRESHOLD, 0);
   
   if (ret != 1) {
@@ -181,13 +207,13 @@ static __attribute__((constructor)) void init(void)
   }
   assert(ret == 1);
 
+  // increase the max number of mmaps because hemem breaks up mmaps into multiple mmaps of PAGE_SIZE
   ret = mallopt(M_MMAP_MAX, 4194304);
   if (ret != 1) {
     perror("mallopt");
   }
   assert(ret == 1);
   
-#endif
   hemem_init();
 }
 
@@ -195,25 +221,3 @@ static __attribute__((destructor)) void hemem_shutdown(void)
 {
   hemem_stop();
 }
-
-/* 
-void* malloc(size_t size)
-{
-  void* ret;
-  if(libc_malloc == NULL) {
-    libc_malloc = bind_symbol("malloc");
-  }
-  assert(libc_malloc != NULL);
-  ret = libc_malloc(size);
-  return ret;
-}
-
-void free(void* ptr)
-{
-  if(libc_free == NULL) {
-    libc_free = bind_symbol("free");
-  }
-  assert(libc_free != NULL);
-  libc_free(ptr);
-}
-*/

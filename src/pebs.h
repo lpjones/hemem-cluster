@@ -35,6 +35,8 @@
 extern uint64_t pebs_start_cpu;
 extern uint64_t scanning_thread_cpu;
 extern uint64_t migration_thread_cpu;
+extern pthread_t scan_thread;
+extern pthread_t kswapd_thread;
 
 #define COOL_IN_PLACE
 //#define SAMPLE_BASED_COOLING
