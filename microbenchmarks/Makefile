@@ -26,7 +26,7 @@ gups-warmset: gups-warmset.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
 gups-hotset-move: gups-hotset-move.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-move gups-hotset-move.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-move gups-hotset-move.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR)
 
 gups-simple: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-simple gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-simple
