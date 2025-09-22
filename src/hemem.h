@@ -90,6 +90,7 @@ extern uint64_t fault_thread_cpu;
 extern uint64_t stats_thread_cpu;
 
 extern FILE *hememlogf;
+extern FILE *tracelogf;
 //#define LOG(...) fprintf(stderr, __VA_ARGS__)
 #define LOG(...)	{ fprintf(hememlogf, __VA_ARGS__); fflush(hememlogf); }
 //#define LOG(str, ...) while(0) {}

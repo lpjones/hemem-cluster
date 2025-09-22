@@ -45,6 +45,8 @@ uint64_t zero_pages_cnt = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
+uint64_t unknown_samples = 0;
+
 
 _Atomic volatile double miss_ratio = -1.0;
 FILE *miss_ratio_f = NULL;
@@ -126,19 +128,21 @@ void *pebs_scan_thread()
   cpu_set_t cpuset;
   pthread_t thread;
 
+  scanning_thread_cpu = 30;
   thread = pthread_self();
   CPU_ZERO(&cpuset);
-  scanning_thread_cpu = 0;
   CPU_SET(scanning_thread_cpu, &cpuset);
   int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (s != 0) {
     perror("pthread_setaffinity_np");
     assert(0);
   }
-
+  uint64_t num_loops = 0;
   for(;;) {
+    
     for (int i = pebs_start_cpu; i < pebs_start_cpu + num_cores; i++) {
       for(int j = 0; j < NPBUFTYPES; j++) {
+        
         struct perf_event_mmap_page *p = perf_page[i][j];
         char *pbuf = (char *)p + p->data_offset;
 
@@ -147,6 +151,7 @@ void *pebs_scan_thread()
         if(p->data_head == p->data_tail) {
           continue;
         }
+
 
         struct perf_event_header *ph = (void *)(pbuf + (p->data_tail % p->data_size));
         struct perf_sample* ps;
@@ -158,10 +163,16 @@ void *pebs_scan_thread()
             assert(ps != NULL);
             if(ps->addr != 0) {
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
+
+              if (write(fileno(tracelogf), &pfn, sizeof(__u64)) == -1) {
+                fprintf(stderr, "trace failed\n");
+              }
             
               page = get_hemem_page(pfn);
               if (page != NULL) {
                 if (page->va != 0) {
+        // printf("loop %lu\n", num_loops++);
+
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
@@ -232,6 +243,7 @@ void *pebs_scan_thread()
           break;
         default:
           // fprintf(stderr, "Unknown type %u\n", ph->type);
+          unknown_samples++;
           //assert(!"NYI");
           break;
         }
@@ -773,7 +785,7 @@ void pebs_init(void)
 
   LOG("pebs_init: started\n");
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-hem.txt");
+  snprintf(&logpath[0], sizeof(logpath) - 1, "log-hem.txt");
   miss_ratio_f = fopen(logpath, "w");
   if (miss_ratio_f == NULL) {
     perror("miss ratio file fopen");
@@ -787,7 +799,7 @@ void pebs_init(void)
     pebs_start_cpu = START_THREAD_DEFAULT;
   
   scanning_thread_cpu = hemem_start_cpu;
-  migration_thread_cpu = scanning_thread_cpu + 1 * 2;
+  migration_thread_cpu = scanning_thread_cpu + 2;
 
   for (int i = pebs_start_cpu; i < pebs_start_cpu + num_cores; i++) {
     //perf_page[i][READ] = perf_setup(0x1cd, 0x4, i);  // MEM_TRANS_RETIRED.LOAD_LATENCY_GT_4
@@ -889,6 +901,7 @@ void pebs_stats()
     core_accesses_cnt[i] = 0;
   }
   LOG_STATS("]\ttotal_samples: [%lu]\n", total_samples);
+  LOG_STATS("unknown_samples: [%lu]\n", unknown_samples);
 
   if (accesses_cnt[DRAMREAD] + accesses_cnt[NVMREAD] != 0) {
     if (miss_ratio == -1.0) {
@@ -909,4 +922,5 @@ void pebs_stats()
 //    (double)(nvm_hot_list.numentries + nvm_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0));
 //  fflush(stdout);
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
+  unknown_samples = 0;
 }

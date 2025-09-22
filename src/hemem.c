@@ -71,6 +71,7 @@ static bool cr3_set = false;
 uint64_t cr3 = 0;
 
 FILE* hememlogf;
+FILE* tracelogf;
 FILE* statsf;
 FILE* timef;
 
@@ -236,10 +237,16 @@ void hemem_init()
   else
     num_cores = PEBS_NPROCS;
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/debuglog-hem.txt");
+  snprintf(&logpath[0], sizeof(logpath) - 1, "debuglog-hem.txt");
   hememlogf = fopen(logpath, "w+");
   if (hememlogf == NULL) {
     perror("log file open\n");
+    assert(0);
+  }
+
+  tracelogf = fopen("trace-hem.bin", "w");
+  if (tracelogf == NULL) {
+    perror("trace file open\n");
     assert(0);
   }
 
@@ -296,7 +303,7 @@ void hemem_init()
   }
 
   char stats_name_buf[25]; 
-  int snret = snprintf(stats_name_buf, 25, "/tmp/stats-hem.txt");
+  int snret = snprintf(stats_name_buf, 25, "stats-hem.txt");
   assert(snret > 0);
   statsf = fopen(stats_name_buf, "w+");
   if (statsf == NULL) {
