@@ -66,6 +66,7 @@ uint64_t bytes_migrated = 0;
 uint64_t memcpys = 0;
 uint64_t memsets = 0;
 uint64_t migration_waits = 0;
+pid_t main_pid = 0;
 
 static bool cr3_set = false;
 uint64_t cr3 = 0;
@@ -87,7 +88,6 @@ void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
 __thread bool internal_call = false;
-__thread bool old_internal_call = false;
 
 #ifndef USE_DMA
 struct pmemcpy {
@@ -108,6 +108,8 @@ void *hemem_parallel_memcpy_thread(void *arg)
   void *dst;
   size_t length;
   size_t chunk_size;
+
+  internal_call = true;
 
   assert(tid < MAX_COPY_THREADS);
   
@@ -159,6 +161,8 @@ static void *hemem_stats_thread()
   cpu_set_t cpuset;
   pthread_t thread;
 
+  internal_call = true;
+
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(STATS_THREAD_CPU_DEFAULT, &cpuset);
@@ -182,6 +186,11 @@ void add_page(struct hemem_page *page)
   struct hemem_page *p;
   pthread_mutex_lock(&pages_lock);
   HASH_FIND(hh, pages, &(page->va), sizeof(uint64_t), p);
+  // if (p != NULL) {
+  //   LOG("Page already been added: 0x%lu\n", page->va);
+  //   pthread_mutex_unlock(&pages_lock);
+  //   return;
+  // }
   assert(p == NULL);
   HASH_ADD(hh, pages, va, sizeof(uint64_t), page);
   pthread_mutex_unlock(&pages_lock);
@@ -210,9 +219,9 @@ void hemem_init()
 #ifdef USE_DMA
   struct uffdio_dma_channs uffdio_dma_channs;
 #endif
-  char logpath[32];
 
   internal_call = true;
+  main_pid = getpid();
 /*
   {
     // This call is dangerous. Ideally, all printf's should be
@@ -237,8 +246,7 @@ void hemem_init()
   else
     num_cores = PEBS_NPROCS;
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "debuglog-hem.txt");
-  hememlogf = fopen(logpath, "w+");
+  hememlogf = fopen("debuglog-hem.txt", "w");
   if (hememlogf == NULL) {
     perror("log file open\n");
     assert(0);
@@ -392,6 +400,7 @@ void hemem_init()
 
 void hemem_stop()
 {
+  internal_call = true;
 #ifdef USE_DMA
   struct uffdio_dma_channs uffdio_dma_channs;
   uffdio_dma_channs.num_channs = NUM_CHANNS;
@@ -403,7 +412,7 @@ void hemem_stop()
 #endif
 
   policy_shutdown();
-
+  internal_call = false;
 }
 
 #ifndef USE_DMA
@@ -423,6 +432,18 @@ static void hemem_parallel_memset(void* addr, int c, size_t n)
   pthread_mutex_unlock(&(pmemcpy.lock));
 }
 #endif
+
+static void inline uffd_register_range(uint64_t addr, uint64_t len) {
+  struct uffdio_register uffdio_register;
+  uffdio_register.range.start = addr;
+  uffdio_register.range.len = len;
+  uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
+  uffdio_register.ioctls = 0;
+  if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+    perror("ioctl uffdio_register");
+    assert(0);
+  }
+}
 
 static void hemem_mmap_populate(void* addr, size_t length)
 {
@@ -471,15 +492,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
     }
 
     // re-register new mmap region with userfaultfd
-    struct uffdio_register uffdio_register;
-    uffdio_register.range.start = (uint64_t)newptr;
-    uffdio_register.range.len = pagesize;
-    uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
-    uffdio_register.ioctls = 0;
-    if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-      perror("ioctl uffdio_register");
-      assert(0);
-    }
+    uffd_register_range((uint64_t)newptr, pagesize);
 
     // use mmap return addr to track new page's virtual address
     page->va = (uint64_t)newptr;
@@ -538,15 +551,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   assert(p != NULL && p != MAP_FAILED);
 
   // register with uffd
-  struct uffdio_register uffdio_register;
-  uffdio_register.range.start = (uint64_t)p;
-  uffdio_register.range.len = length;
-  uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
-  uffdio_register.ioctls = 0;
-  if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-    perror("ioctl uffdio_register");
-    assert(0);
-  }
+  uffd_register_range((uint64_t)p, length);
 
   if (!cr3_set) {
     if (ioctl(uffd, UFFDIO_CR3, &uffdio_cr3) < 0) {
@@ -667,8 +672,6 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   struct uffdio_dma_copy uffdio_dma_copy;
 #endif
 
-  internal_call = true;
-
   assert(!page->in_dram);
 
   //LOG("hemem_migrate_up: migrate down addr: %lx pte: %lx\n", page->va, hemem_va_to_pa(page->va));
@@ -736,15 +739,9 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
 
   // re-register new mmap region with userfaultfd
   gettimeofday(&start, NULL);
-  struct uffdio_register uffdio_register;
-  uffdio_register.range.start = (uint64_t)newptr;
-  uffdio_register.range.len = pagesize;
-  uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
-  uffdio_register.ioctls = 0;
-  if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-    perror("ioctl uffdio_register");
-    assert(0);
-  }
+
+  uffd_register_range((uint64_t)newptr, pagesize);
+
   gettimeofday(&end, NULL);
   LOG_TIME("uffdio_register: %f s\n", elapsed(&start, &end));
 
@@ -765,8 +762,6 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
 
   gettimeofday(&migrate_end, NULL);  
   LOG_TIME("hemem_migrate_up: %f s\n", elapsed(&migrate_start, &migrate_end));
-
-  internal_call = false;
 }
 
 
@@ -783,7 +778,6 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   struct uffdio_dma_copy uffdio_dma_copy;
 #endif
 
-  internal_call = true;
 
   assert(page->in_dram);
 
@@ -850,15 +844,9 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
 
   // re-register new mmap region with userfaultfd
   gettimeofday(&start, NULL);
-  struct uffdio_register uffdio_register;
-  uffdio_register.range.start = (uint64_t)newptr;
-  uffdio_register.range.len = pagesize;
-  uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
-  uffdio_register.ioctls = 0;
-  if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-    perror("ioctl uffdio_register");
-    assert(0);
-  }
+
+  uffd_register_range((uint64_t)newptr, pagesize);
+
   gettimeofday(&end, NULL);
   LOG_TIME("uffdio_register: %f s\n", elapsed(&start, &end));
   
@@ -880,7 +868,6 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   gettimeofday(&migrate_end, NULL);  
   LOG_TIME("hemem_migrate_down: %f s\n", elapsed(&migrate_start, &migrate_end));
 
-  internal_call = false;
 }
 
 void hemem_wp_page(struct hemem_page *page, bool protect)
@@ -890,8 +877,6 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   int ret;
   struct timeval start, end;
   uint64_t pagesize = pt_to_pagesize(page->pt);
-
-  internal_call = true;
 
   //LOG("hemem_wp_page: wp addr %lx pte: %lx\n", addr, hemem_va_to_pa(addr));
 
@@ -913,16 +898,12 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
   gettimeofday(&end, NULL);
 
   LOG_TIME("uffdio_writeprotect: %f s\n", elapsed(&start, &end));
-
-  internal_call = false;
 }
 
 
 void handle_wp_fault(uint64_t page_boundry)
 {
   struct hemem_page *page;
-
-  internal_call = true;
 
   page = find_page(page_boundry);
   assert(page != NULL);
@@ -932,7 +913,6 @@ void handle_wp_fault(uint64_t page_boundry)
   LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n", page_boundry);
 
   while (page->migrating);
-  internal_call = false;
 }
 
 
@@ -949,8 +929,6 @@ void handle_missing_fault(uint64_t page_boundry)
   bool in_dram;
   uint64_t pagesize;
 
-  internal_call = true;
-
   assert(page_boundry != 0);
 
   /*
@@ -963,6 +941,43 @@ void handle_missing_fault(uint64_t page_boundry)
     return;
   }
 */
+
+  // check if it was mmapped already
+  // pthread_mutex_lock(&fault_lock);
+  page = find_page(page_boundry);
+  if (page != NULL) {
+      LOG("handle_missing_fault: page already exists: 0x%lx (in_dram=%d, migrating=%d)\n",
+          page->va, page->in_dram, page->migrating);
+
+      // fprintf(stderr, "dram pages: %lu, nvm pages: %lu\n", dram_free_list.numentries, nvm_free_list.numentries);
+
+      
+
+      /* determine correct wake length (huge page aware) */
+      uint64_t wake_len = pt_to_pagesize(page->pt); /* use actual pagesize of the page */
+      struct uffdio_range range;
+      range.start = page_boundry;
+      range.len = wake_len;
+
+      int wake_ret = ioctl(uffd, UFFDIO_WAKE, &range);
+      if (wake_ret < 0) {
+          fprintf(stderr, "UFFDIO_WAKE failed: ret=%d errno=%d (%s) start=%#lx len=%lu\n",
+                  wake_ret, errno, strerror(errno), (unsigned long)range.start, (unsigned long)range.len);
+      } else {
+          fprintf(stderr, "UFFDIO_WAKE succeeded: start=%#lx len=%lu\n",
+                  (unsigned long)range.start, (unsigned long)range.len);
+      }
+
+      /* optionally double-check mapping */
+      unsigned char vec;
+      if (mincore((void*)page_boundry, wake_len, &vec) == -1) {
+          fprintf(stderr, "mincore says not mapped: errno=%d (%s)\n", errno, strerror(errno));
+      } else {
+          fprintf(stderr, "mincore: mapped, vec=0x%x\n", vec);
+      }
+
+      return;
+  }
 
   gettimeofday(&missing_start, NULL);
 
@@ -998,6 +1013,7 @@ void handle_missing_fault(uint64_t page_boundry)
 
   // now that we have an offset determined via the policy algorithm, actually map
   // the page for the application
+  
   gettimeofday(&start, NULL);
   newptr = libc_mmap((void*)page_boundry, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, (in_dram ? dramfd : nvmfd), offset);
   if (newptr == MAP_FAILED) {
@@ -1014,16 +1030,9 @@ void handle_missing_fault(uint64_t page_boundry)
   LOG_TIME("mmap_%s: %f s\n", (in_dram ? "dram" : "nvm"), elapsed(&start, &end));
 
   gettimeofday(&start, NULL);
-  // re-register new mmap region with userfaultfd
-  struct uffdio_register uffdio_register;
-  uffdio_register.range.start = (uint64_t)newptr;
-  uffdio_register.range.len = pagesize;
-  uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
-  uffdio_register.ioctls = 0;
-  if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-    perror("ioctl uffdio_register");
-    assert(0);
-  }
+
+  uffd_register_range((uint64_t)newptr, pagesize);
+
   gettimeofday(&end, NULL);
   LOG_TIME("uffdio_register: %f s\n", elapsed(&start, &end));
 
@@ -1046,8 +1055,6 @@ void handle_missing_fault(uint64_t page_boundry)
   pages_allocated++;
   gettimeofday(&missing_end, NULL);
   LOG_TIME("hemem_missing_fault: %f s\n", elapsed(&missing_start, &missing_end));
-
-  internal_call = false;
 }
 
 
@@ -1066,6 +1073,8 @@ void *handle_fault()
 
   cpu_set_t cpuset;
   pthread_t thread;
+
+  internal_call = true;
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -1103,7 +1112,7 @@ void *handle_fault()
       assert(0);
     }
 
-    if (!pollfd.revents & POLLIN) {
+    if (!(pollfd.revents & POLLIN)) {
       continue;
     }
 

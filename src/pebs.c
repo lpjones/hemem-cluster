@@ -44,6 +44,10 @@ uint64_t core_accesses_cnt[PEBS_NPROCS];
 uint64_t zero_pages_cnt = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
+uint64_t max_throttle_dif = 0;
+uint64_t throttle_dif = 0;
+uint64_t num_record_samples = 0;
+uint64_t num_valid_samples = 0;
 uint64_t cools = 0;
 uint64_t unknown_samples = 0;
 
@@ -128,7 +132,9 @@ void *pebs_scan_thread()
   cpu_set_t cpuset;
   pthread_t thread;
 
-  scanning_thread_cpu = 30;
+  internal_call = true;
+
+  scanning_thread_cpu = 0;
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(scanning_thread_cpu, &cpuset);
@@ -137,7 +143,6 @@ void *pebs_scan_thread()
     perror("pthread_setaffinity_np");
     assert(0);
   }
-  uint64_t num_loops = 0;
   for(;;) {
     
     for (int i = pebs_start_cpu; i < pebs_start_cpu + num_cores; i++) {
@@ -159,9 +164,11 @@ void *pebs_scan_thread()
 
         switch(ph->type) {
         case PERF_RECORD_SAMPLE:
+            num_record_samples++;
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
             if(ps->addr != 0) {
+              num_valid_samples++;
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
 
               if (write(fileno(tracelogf), &pfn, sizeof(__u64)) == -1) {
@@ -231,21 +238,20 @@ void *pebs_scan_thread()
             }
   	      break;
         case PERF_RECORD_THROTTLE:
+            throttle_cnt++;
+            throttle_dif++;
+            if (throttle_dif > max_throttle_dif)
+                max_throttle_dif = throttle_dif;
+            break;
         case PERF_RECORD_UNTHROTTLE:
-          //fprintf(stderr, "%s event!\n",
-          //   ph->type == PERF_RECORD_THROTTLE ? "THROTTLE" : "UNTHROTTLE");
-          if (ph->type == PERF_RECORD_THROTTLE) {
-              throttle_cnt++;
-          }
-          else {
-              unthrottle_cnt++;
-          }
-          break;
+            unthrottle_cnt++;
+            throttle_dif--;
+            break;
         default:
-          // fprintf(stderr, "Unknown type %u\n", ph->type);
-          unknown_samples++;
-          //assert(!"NYI");
-          break;
+            // fprintf(stderr, "Unknown type %u\n", ph->type);
+            unknown_samples++;
+            //assert(!"NYI");
+            break;
         }
 
         p->data_tail += ph->size;
@@ -511,6 +517,8 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
+
+  internal_call = true;
 
   migration_thread_cpu = 2;
   thread = pthread_self();
@@ -901,7 +909,10 @@ void pebs_stats()
     core_accesses_cnt[i] = 0;
   }
   LOG_STATS("]\ttotal_samples: [%lu]\n", total_samples);
-  LOG_STATS("unknown_samples: [%lu]\n", unknown_samples);
+  LOG_STATS("unknown_samples: [%lu]\t", unknown_samples);
+  LOG_STATS("max_throttle_dif: [%lu]\t", max_throttle_dif);
+  LOG_STATS("num_record_samples: [%lu]\t", num_record_samples);
+  LOG_STATS("num_valid_samples: [%lu]\n", num_valid_samples);
 
   if (accesses_cnt[DRAMREAD] + accesses_cnt[NVMREAD] != 0) {
     if (miss_ratio == -1.0) {
@@ -923,4 +934,7 @@ void pebs_stats()
 //  fflush(stdout);
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   unknown_samples = 0;
+  max_throttle_dif = 0;
+  num_record_samples = 0;
+  num_valid_samples = 0;
 }

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <unistd.h>
 
 #ifndef __cplusplus
 #include <stdatomic.h>
@@ -150,9 +151,9 @@ extern uint64_t missing_faults_handled;
 extern uint64_t migrations_up;
 extern uint64_t migrations_down;
 extern __thread bool internal_malloc;
-extern __thread bool old_internal_call;
 extern __thread bool internal_call;
 extern __thread bool internal_munmap;
+extern pid_t main_pid;
 
 enum memtypes {
   FASTMEM = 0,

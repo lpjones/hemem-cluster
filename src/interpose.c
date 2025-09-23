@@ -21,9 +21,13 @@ void (*libc_free)(void* ptr) = NULL;
 
 static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, off_t offset, uint64_t *result)
 {
+  if (getpid() != main_pid) {
+    LOG("hemem interpose: calling libc mmap due to different pid: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+    return 1;
+  }
   //ensure_init();
   if (!is_init) {
-    //LOG("hemem interpose: calling libc mmap due to hemem init in progress\n");
+    LOG("hemem interpose: calling libc mmap due to hemem init in progress\n");
     return 1;
   }
 
@@ -57,15 +61,15 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   //}
   
   if ((fd == dramfd) || (fd == nvmfd)) {
-    //LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
+    LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
     return 1;
   }
 
 // #ifndef LLAMA
-  if (length < 2UL * 1024UL * 1024UL) {
-    LOG("hemem interpose calling libc mmap due to small allocation size: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
-    return 1;
-  }
+  // if (length < 2UL * 1024UL * 1024UL) {
+  //   LOG("hemem interpose calling libc mmap due to small allocation size: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+  //   return 1;
+  // }
 // #endif
 
   LOG("hemem interpose: calling hemem mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
