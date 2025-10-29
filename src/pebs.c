@@ -773,7 +773,7 @@ void pebs_init(void)
 
   LOG("pebs_init: started\n");
 
-  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-hem.txt");
+  snprintf(&logpath[0], sizeof(logpath) - 1, "log-hem.txt");
   miss_ratio_f = fopen(logpath, "w");
   if (miss_ratio_f == NULL) {
     perror("miss ratio file fopen");
